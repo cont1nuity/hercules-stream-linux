@@ -1,0 +1,142 @@
+# Hercules Stream for Linux — controller config
+# Copy to config.toml and edit. Find your app match strings with:  python3 src/stream100.py list
+# The input protocol is fully decoded and baked into src/stream100.py,
+# so you only configure the mapping below.
+
+# Config schema version. Missing keys always take built-in defaults at startup, so an
+# upgrade never requires editing this file — the marker only matters if a future version
+# has to change what an EXISTING key means (the daemon will then say so at startup).
+config_version = 1
+
+[settings]
+volume_step     = 1     # percent applied per detent
+counts_per_step = 6     # encoder counts per volume step (lower = more sensitive)
+verbose         = false  # log each action
+
+# ---------------------------------------------------------------------------
+# Pages: the device has 4 encoders. Define one or more pages; switch between
+# them with a `page:` action button. Each lane = one encoder (left->right).
+#
+#   lane 'match'  = case-insensitive substring matched against a PipeWire
+#                   sink-input's application.name / process.binary / media.name.
+#                   Alternatives with '|': "firefox|waterfox" matches either.
+#                   Generic aliases: "browser" (firefox/waterfox/chrome/chromium/
+#                   brave/opera/vivaldi/edge/...) and "game" (wine/proton incl.
+#                   Steam + Battle.net, Windows .exe streams, gamescope).
+#                   Special: "default" / "master" = the default output sink;
+#                   "mic" = the default INPUT source (microphone);
+#                   "mic:<needle>" = a capture source matched by name/description
+#                   (find names with `pactl list sources short`).
+#   encoder turn  -> volume +/- on its lane
+#   encoder push  -> mute toggle on its lane
+#
+# Action buttons (4) per page. Action string = scheme:arg
+#   mute:<match>   toggle mute of a sink-input (or "default")
+#   cmd:<shell>    run a shell command
+#   page:next|prev|<n>   switch page  (the device has no dedicated page key)
+#   none           do nothing
+# ---------------------------------------------------------------------------
+
+# [ui] — only used by `python3 src/ui.py` (native display daemon); the whole section and all
+# per-page icons/labels fields are optional. stream100.py `run` ignores them.
+[ui]
+brightness     = 80     # panel backlight 0..100 at startup (op31; 0 powers the panel OFF)
+# Live VU bars (READ-ONLY metering via parec): bar k always meters lane k's OWN audio —
+# app lanes meter that app's stream (--monitor-stream), "default" lanes meter the default
+# output (@DEFAULT_MONITOR@). Meters follow apps as their streams come and go.
+vu             = true
+vu_gain        = 1.5
+vu_release     = 0.45   # bar-body fall smoothing per frame: 0 = raw peak (snappiest), 0.95 = very slow
+vu_scale       = true   # scale the bar by the lane's volume (full signal tops out AT the volume
+                        # level, muted lane = no bar — like the vendor UI); false = absolute level
+# VU bar color model (positions are % of the FULL bar, not of the current level):
+# the top of every bar is the clip zone (size fixed by the device at ~13%), below it the
+# warning band, below that the lane's own color/gradient from per-page `colors`.
+vu_clip_color  = "#ff0000"  # clip zone color (the top ~13%)
+vu_band_color  = "orange"   # warning band color
+vu_band_from   = 75         # warning band starts at this % of the full bar (up to the clip
+                            # zone; 100 = no band). 75 = a thin orange band just under the
+                            # firmware-fixed clip zone (top ~13%), so orange only shows on a
+                            # loud peak; lower it to warn earlier (30 = the upper ~70% warns)
+
+vu_cap_color   = "#ffffff"  # peak-cap marker (the device fades its falling trail to black)
+vu_bg_color    = "#202020"  # bar background
+mute_blink     = true  # true: muted lane -> its button LED blinks (op30 state 2)
+element_passes = 2      # icon/label repaint passes per page switch (isoc is fire-and-forget)
+tray           = true   # system-tray icon: config quick-open, start-at-login toggle, quit
+                        # (needs python dbus-next — bundled in the AppImage; repo runs:
+                        # pacman -S python-dbus-next / pip install dbus-next)
+
+[[pages]]
+name  = "Main"
+lanes = ["default", "mic", "Discord", "game"]          # encoders 1..4
+buttons = ["mute:mic", "mute:default", "none", "page:next"]
+# ui.py display fields (optional): icon = a name from the icons/ folder ("music" finds
+# icons/music.svg) OR an explicit file path for custom icons ("~/Pictures/me.png",
+# "/opt/art/cat.svg" — abs/~/$VAR/repo-relative). See icons/README.md. "" clears the slot.
+# labels default to the lane strings.
+icons         = ["volume", "mic", "voice", "game"]
+labels        = ["Master", "Mic", "Discord", "Game"]
+# VU bar color per lane: "#rgb", "#rrggbb", or a name (red, orange, amber, yellow, lime,
+# green, teal, cyan, blue, purple/violet, magenta, pink, discord, white, grey).
+# A lane entry may also be a LIST of up to 16 colors = a vertical gradient (bottom->top),
+# e.g. ["green", "yellow"]; the device blends between the stops. The warning band / clip
+# zone from [ui] always sit on top of the body color.
+colors        = ["blue", "red", "discord", "green"]
+button_icons  = ["mic-mute", "volume-mute", "", "arrow-right"]
+button_labels = ["Mute Mic", "Mute Out", "", "Next"]
+
+[[pages]]
+name  = "Media"
+lanes = ["spotify", "browser", "vlc|mpv", "default"]
+buttons = ["mute:spotify", "mute:browser", "none", "page:next"]
+icons         = ["music", "browser", "video", "volume"]
+labels        = ["Spotify", "Browser", "Media", "Master"]
+colors        = ["green", "orange", "purple", "blue"]
+button_icons  = ["volume-mute", "volume-mute", "", "arrow-right"]
+button_labels = ["Mute Spot.", "Mute Brws.", "", "Next"]
+
+# ===========================================================================
+# [stream200] — Hercules Stream 200 XLR ONLY (USB 06f8:e054).  ⚠ EXPERIMENTAL
+# ---------------------------------------------------------------------------
+# Ignored on the Stream 100. The 200 XLR's MAIN area — 4 dials (each push-to-mute)
+# + 4 action buttons — is configured by the [[pages]] above, EXACTLY like the
+# Stream 100; nothing extra is needed for it. This section is ONLY for the
+# RIGHT-SIDE additions: 5 buttons (mute, link, next-page, creator, audience) and
+# the headphone dial.
+#
+# You only set what each addition DOES — a button's action, or the audio lane the
+# headphone dial controls. The telemetry bit/offset of every physical control is a
+# hardware fact that lives in CODE (src/stream200.py: BUTTON_BITS / DIAL_FIELDS),
+# filled once from a real device by the maintainer — you never set bytes here.
+# (Until that map is filled the controls are inert. The panel display is not driven
+#  yet — its image format is still being reverse-engineered.)
+# ---------------------------------------------------------------------------
+[stream200]
+poll_hz = 50    # telemetry poll rate (Hz)
+# dial_step = 64.0   # (advanced) float-units of dial movement per volume step. The dials report
+#                    # IEEE-754 float values (capture-derived); this calibrates sensitivity once
+#                    # you have hardware. Lower = more sensitive. Default 64.0.
+
+# Right-side buttons — one [[stream200.buttons]] block each. `name` is the fixed button:
+# mute / link / page / creator / audience. `action` = what a PRESS does (same scheme as page
+# buttons): mute:<match> / cmd:<shell> / page:next|prev|<n> / none. Omit a button to leave it
+# inert. (The graphical editor's "200 XLR" tab edits these.)
+#
+# [[stream200.buttons]]
+# name   = "page"
+# action = "page:next"        # the next-page button cycles pages, like the 100
+#
+# [[stream200.buttons]]
+# name   = "creator"
+# action = "cmd:notify-send 'Creator mode'"
+#
+# [[stream200.buttons]]
+# name   = "mute"
+# action = "mute:default"
+
+# Headphone dial — set which audio lane it controls (same match syntax as [[pages]] lanes).
+# [[stream200.dials]]
+# name   = "headset"
+# lane   = "default"
+# invert = false              # optional: reverse the turn direction

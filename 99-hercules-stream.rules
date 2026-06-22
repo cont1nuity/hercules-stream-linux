@@ -1,0 +1,9 @@
+# Hercules Stream family (Guillemot Corp.)
+#   e053 = Stream 100 ; e054 = Stream 200 XLR ; e055 = Stream 200 XLR sibling (HSM02)
+# Grant the active local user libusb access to the raw USB node.
+# TAG+="uaccess" -> systemd-logind gives the logged-in (seat) user an ACL.
+# This is the right mechanism on SteamOS/KDE and any modern systemd distro.
+# MODE/GROUP are a fallback for non-logind setups.
+SUBSYSTEM=="usb", ATTR{idVendor}=="06f8", ATTR{idProduct}=="e053", TAG+="uaccess", MODE="0660", GROUP="plugdev"
+SUBSYSTEM=="usb", ATTR{idVendor}=="06f8", ATTR{idProduct}=="e054", TAG+="uaccess", MODE="0660", GROUP="plugdev"
+SUBSYSTEM=="usb", ATTR{idVendor}=="06f8", ATTR{idProduct}=="e055", TAG+="uaccess", MODE="0660", GROUP="plugdev"

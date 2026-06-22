@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Runtime / user-specific
+config.toml
+logs/
+src/build_overrides.toml
+
+# Packaging scratch & output
+build/
+dist/
+
+# Maintainer's private RE repo (see CLAUDE.md)
+dev/
