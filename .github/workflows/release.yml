@@ -1,0 +1,32 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write   # gh release create
+
+jobs:
+  appimage:
+    # Oldest hosted LTS → older glibc, so the bundled libusb runs on more targets
+    # (build-appimage.sh copies libusb from the build host).
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # tags, for the script's git-describe fallback
+      - name: Install build deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq librsvg2-bin libusb-1.0-0 curl
+      - name: Build AppImage
+        run: bash packaging/build-appimage.sh "${GITHUB_REF_NAME#v}"
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/Hercules-Stream-Linux-*-x86_64.AppImage \
+            --title "Hercules Stream for Linux ${GITHUB_REF_NAME#v}" \
+            --generate-notes
