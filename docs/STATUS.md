@@ -8,6 +8,17 @@ it's load-bearing wire-format, update [../CLAUDE.md](../CLAUDE.md)'s Architectur
 - **Runtime: feature-complete** (daemon v1) — input, pages, volume/mute, per-lane VU, colors,
   custom icons, mic lanes, multi-stream lanes, relink guard all hardware-confirmed.
 - **AppImage packaging** ✅ — built + hardware-verified 2026-06-11.
+- **Git + GitHub** ✅ — public repo `cont1nuity/hercules-stream-linux` (GPL-3.0) + private
+  `…-dev` for RE material; `.gitignore` keeps `dev/`/`config.toml`/build scratch out of the
+  public tree (2026-06-22).
+- **CI** ✅ — GitHub Actions runs the offline selftests (CRC gate + op grammar, no hardware) on
+  every push/PR (`.github/workflows/ci.yml`).
+- **Releases** ✅ — a `v*` tag builds the AppImage on ubuntu-22.04 and publishes a GitHub Release
+  (`.github/workflows/release.yml`), notes auto-pulled from `CHANGELOG.md`
+  (`packaging/changelog-section.sh`); idempotent publish makes re-tagging safe. **v1.0.0 shipped
+  2026-06-22.**
+- **CHANGELOG** ✅ — `CHANGELOG.md` (Keep a Changelog); each release's notes are the tagged
+  version's section.
 - **XDG config/log homes** ✅.
 - **First-run setup** ✅ — `src/firstrun.py`, pkexec/GUI flow verified live 2026-06-12.
 - **Login autostart** ✅ — XDG autostart `.desktop` entry via the tray (default ON with opt-out,

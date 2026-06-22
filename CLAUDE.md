@@ -23,7 +23,7 @@ project naming is variant-neutral so further Stream models can land later.
 - **The daemon**: `src/ui.py` (launched via `./start.sh`) ties it together — knobs/buttons drive
   per-app PipeWire volume/mute, the panel shows pages of icons/labels/volume arcs, and per-lane
   VU bars meter each lane's own audio stream. **v1 is feature-complete with no known runtime
-  bugs**; remaining work is packaging/shipping (see "Status & open items").
+  bugs**; released as v1.0.0 — AppImage on GitHub Releases (see "Status & open items").
 
 There is no build system — plain Python. The runtime is fully self-contained: `src/` + `icons/`
 + `fonts/` (the 32 verbatim panel wake/init frames are embedded in `src/wake_data.py`).
@@ -84,6 +84,8 @@ python3 src/display.py --image x.png   # show a 480×272 image (background plane
 # Packaging:
 packaging/build-appimage.sh [VERSION]  # -> dist/Hercules-Stream-Linux-<VERSION>-x86_64.AppImage
 packaging/build-appimage.sh 1.0.0 --enable-stream200 --set ui.brightness=80  # bake build overrides
+# Cut a release: move CHANGELOG.md [Unreleased] -> "## [X.Y.Z] - DATE", commit, then
+#   git tag -a vX.Y.Z -m … && git push origin vX.Y.Z   # Actions builds the AppImage + publishes the Release
 ```
 
 Python 3.9+ from source (3.11+ uses stdlib `tomllib`; older auto-installs `tomli` — the AppImage
@@ -200,9 +202,11 @@ packets (firmware length cap 0x2C9F):
 ## Status & open items
 
 v1 is feature-complete and hardware-verified (input, pages, volume/mute, per-lane VU, colors,
-icons); the graphical config editor and AppImage packaging are implemented. Full status — what's
-verified on hardware, the VU-color model, op32/protocol minutiae, and remaining work (CI,
-releases, login autostart) — lives in **[docs/STATUS.md](docs/STATUS.md)**. When you verify or
+icons); the graphical config editor and AppImage packaging are implemented, and **v1.0.0 is
+published on GitHub Releases** — CI runs the offline selftests on every push, and a `v*` tag builds
+the AppImage and publishes a Release with notes pulled from `CHANGELOG.md`. Full status — what's
+verified on hardware, the VU-color model, op32/protocol minutiae, and remaining (hardware-gated
+Stream 200) work — lives in **[docs/STATUS.md](docs/STATUS.md)**. When you verify or
 disprove something on hardware, record it there; if it's load-bearing wire-format, update the
 Architecture section above too.
 
