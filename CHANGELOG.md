@@ -11,6 +11,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-06-23
+
+### Added
+- **Device-less tray idle + bidirectional hotplug** — with no device attached the daemon idles
+  in the tray with all functionality off (no audio worker / input / metering / lane matching);
+  it brings a full session up on attach, tears it down on removal, and resumes on replug.
+- **Greyed tray icon while idle** — the tray icon dims while no device is served and returns to
+  normal once a session is active.
+- **Crash logging** — `faulthandler` dumps every thread's stack to `logs/crash.log` on a fatal
+  signal, so a C-level abort self-records instead of dying silently.
+
+### Fixed
+- **Surprise removal no longer aborts the process** — an isochronous write to a just-removed
+  device made pyusb feed libusb a negative iso-packet count, triggering an uncatchable `SIGABRT`.
+  `Scheduler.send` now gates every isoc write on the device's usbfs node still existing.
+- A device-session error now drops to tray idle instead of killing the daemon.
+
+### Changed
+- Removed the tray on/off toggle from the config editor (the `tray` key stays in `config.toml`
+  and is still honored).
+- Documentation restructured into per-component sub-docs under `docs/` (`PROTOCOL`, `CODECS`,
+  `DEVICE-IO`, `DAEMON`, `STREAM200`) with a slimmed CLAUDE.md hub and a `src/` module map.
+
 ## [1.0.0] - 2026-06-22
 
 First release. Full support for the Hercules **Stream 100** (USB `06f8:e053`),
@@ -38,5 +61,6 @@ reverse-engineered from the Windows *Hercules Stream Control* app.
 - **Stream 200 XLR** (`06f8:e054`) — experimental backend behind a feature flag
   (off by default): telemetry-driven audio control; on-panel display not yet implemented.
 
-[Unreleased]: https://github.com/cont1nuity/hercules-stream-linux/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/cont1nuity/hercules-stream-linux/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/cont1nuity/hercules-stream-linux/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/cont1nuity/hercules-stream-linux/releases/tag/v1.0.0
