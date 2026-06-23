@@ -1419,6 +1419,17 @@ def selftest(cfg):
 
 def main():
     args = sys.argv[1:]
+    # Turn a C-level abort (e.g. a libusb assert on surprise removal) into a thread-stack dump
+    # in logs/crash.log instead of a silent death — the daemon often runs detached. ~free, and
+    # it already paid for itself once (the iso_write removal abort). Keep the handle for the
+    # process lifetime (main() blocks in run() until exit) so the fd stays open for the handler.
+    import faulthandler
+    try:
+        os.makedirs(LOGS, exist_ok=True)
+        _crashlog = open(os.path.join(LOGS, "crash.log"), "a")
+        faulthandler.enable(file=_crashlog)
+    except Exception:
+        pass
     cfgpath = config_path()                  # repo config.toml (dev) or XDG home (packaged)
     if "-c" in args:
         cfgpath = args[args.index("-c") + 1]
