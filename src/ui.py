@@ -691,7 +691,11 @@ class DeviceWatch(threading.Thread):
     def run(self):
         import usbdev
         while not self.stop:
-            if usbdev.find(idVendor=self.vid, idProduct=self.pid) is None:
+            try:
+                gone = usbdev.find(idVendor=self.vid, idProduct=self.pid) is None
+            except Exception:                        # probe error on a half-removed device == gone
+                gone = True
+            if gone:
                 self.gone = True
                 return
             time.sleep(1.0)
@@ -1039,7 +1043,16 @@ class UI:
         try:
             while True:
                 dev, ep = self._wait_for_device()    # idle in the tray until a device attaches
-                self._serve(dev, ep)                 # 20 ms cadence; returns when it unplugs
+                try:
+                    self._serve(dev, ep)             # 20 ms cadence; returns when it unplugs
+                except KeyboardInterrupt:
+                    raise                            # quit -> outer handler (clean shutdown)
+                except Exception as e:               # a session dies on USB/libusb removal in many
+                    # ways; whatever it is, isolate it — NEVER let it kill the daemon (and the
+                    # PDEATHSIG'd tray). _serve already tore the session down in its own finally.
+                    print("  device session ended on error (%s) — back to tray idle" % e)
+                    self.dbg.log("session error -> tray idle: %r", e)
+                    continue
                 print("device removed — idling in the tray (audio/input/routing off); "
                       "replug to resume.")
         except KeyboardInterrupt:
@@ -1055,7 +1068,12 @@ class UI:
         import display as D
         announced = False
         while True:
-            if usbdev.find(idVendor=D.VID, idProduct=D.PID) is not None:
+            try:
+                present = usbdev.find(idVendor=D.VID, idProduct=D.PID) is not None
+            except Exception as e:                   # a backend hiccup must not break the idle loop
+                self.dbg.log("idle device probe error: %r", e)
+                present = False
+            if present:
                 opened = self._open_device()
                 if opened:
                     return opened
