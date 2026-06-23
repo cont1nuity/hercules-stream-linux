@@ -449,6 +449,8 @@ class AudioWorker(threading.Thread):
     def run(self):
         while True:
             item = self.q.get()
+            if item is None:                 # sentinel: session teardown -> stop the thread
+                return
             t0 = time.monotonic()
             try:
                 self._handle(item)
@@ -672,6 +674,27 @@ class InputReader(threading.Thread):
                if self.errors else "")
         return "%d reports (last %s) %d idle-timeouts%s" % (
             self.n_reports, age, self.n_timeouts, err)
+
+
+class DeviceWatch(threading.Thread):
+    """1 Hz USB presence poll, deliberately OFF the cadence: a libusb enumeration is blocking
+    work and the 20 ms slot loop must never block. Sets .gone the moment the device disappears
+    so the daemon can drop to tray-idle and resume on replug. ponytail: poll, not udev events
+    — 1 Hz is ample for a human pulling a cable; switch to pyudev only if latency ever matters."""
+
+    def __init__(self, vid, pid):
+        super().__init__(daemon=True)
+        self.vid, self.pid = vid, pid
+        self.gone = False
+        self.stop = False
+
+    def run(self):
+        import usbdev
+        while not self.stop:
+            if usbdev.find(idVendor=self.vid, idProduct=self.pid) is None:
+                self.gone = True
+                return
+            time.sleep(1.0)
 
 
 # --------------------------------------------------------------------------- the daemon
@@ -995,13 +1018,13 @@ class UI:
     # ---- main loop ----
 
     def run(self):
+        """Supervisor loop. Renders the page assets and spawns the tray ONCE, then serves the
+        device whenever one is attached. While NO device is attached the daemon idles in the
+        tray with everything off — no audio worker, no input reader, no VU taps, no lane
+        auto-routing — and brings the full session up (and tears it down) on hotplug.
+        ponytail: Stream-100-only (polls e053); a 200 plugged into an idle daemon is ignored —
+        the 200 backend is experimental and started from main() at launch, not hotplugged."""
         import signal
-        import usb.core
-        import usb.util
-        import usbdev
-        import display as D
-        import bars_live as BL
-        dbg = self.dbg
 
         def _term(_sig, _frm):               # systemd stop / kill -> clean shutdown path
             raise KeyboardInterrupt
@@ -1010,6 +1033,109 @@ class UI:
         rend = Renderer()
         print("pre-rendering %d page(s) of elements..." % len(self.pages))
         self.prerender(rend)
+        # The tray is the ONLY thing alive during tray-idle; it tracks our (stable) pid across
+        # plug/unplug cycles, so spawn it ONCE here — not per session.
+        tray = spawn_tray(self.cfgpath, self.dbg) if self.tray else None
+        try:
+            while True:
+                dev, ep = self._wait_for_device()    # idle in the tray until a device attaches
+                self._serve(dev, ep)                 # 20 ms cadence; returns when it unplugs
+                print("device removed — idling in the tray (audio/input/routing off); "
+                      "replug to resume.")
+        except KeyboardInterrupt:
+            print("\nstopping.")
+        finally:
+            if tray and tray.poll() is None:
+                tray.terminate()
+
+    def _wait_for_device(self):
+        """Block — idling in the tray with all functionality off — until a Stream 100 is both
+        attached AND openable, then return (dev, ep). SIGTERM (-> KeyboardInterrupt) quits."""
+        import usbdev
+        import display as D
+        announced = False
+        while True:
+            if usbdev.find(idVendor=D.VID, idProduct=D.PID) is not None:
+                opened = self._open_device()
+                if opened:
+                    return opened
+            if not announced:
+                print("no Stream 100 attached — idling in the tray (audio/input/routing off). "
+                      "Plug it in to start.")
+                self.dbg.log("idle: waiting for a device")
+                announced = True
+            time.sleep(1.0)
+
+    def _open_device(self):
+        """Full device bring-up: USB reset (restores the power-on input state, as a real replug
+        would) + display iface (open_ep) + input iface (iface0) claim. Returns (dev, ep), or
+        None on any failure so the caller stays in tray-idle and retries on the next poll."""
+        import usb.core
+        import usb.util
+        import usbdev
+        import display as D
+        dbg = self.dbg
+        # Emulate a fresh replug: a USB reset restores the power-on state, so input is live
+        # every session (a relaunch otherwise inherits the previous run's endpoint state).
+        try:
+            d0 = usbdev.find(idVendor=D.VID, idProduct=D.PID)
+            if d0 is not None:
+                d0.reset()
+                usb.util.dispose_resources(d0)
+                time.sleep(0.5)
+                dbg.log("USB reset at open ok")
+        except Exception as e:
+            print("  (usb reset failed: %s)" % e)
+            dbg.log("USB reset failed: %s", e)
+        try:
+            dev, ep = D.open_ep()            # sys.exits on not-found / iface-busy
+        except SystemExit as e:
+            dbg.log("open_ep failed (%s) — staying in tray idle, will retry", e)
+            return None
+        try:                                 # input side: claim iface0 on the SAME handle
+            if dev.is_kernel_driver_active(S.IFACE):
+                dev.detach_kernel_driver(S.IFACE)
+        except Exception:
+            pass
+        try:
+            usb.util.claim_interface(dev, S.IFACE)
+        except usb.core.USBError as e:
+            dbg.log("claim input iface failed (%s) — will retry", e)
+            try:
+                usb.util.dispose_resources(dev)
+            except Exception:
+                pass
+            return None
+        try:
+            dev.clear_halt(S.EP_IN)          # belt-and-braces: un-wedge the input endpoint
+        except Exception as e:
+            dbg("startup clear_halt: %s", e)
+        return dev, ep
+
+    def _serve(self, dev, ep):
+        """One device session: bring up the audio worker / input reader / VU taps, paint the
+        page, and run the 20 ms cadence until the device is unplugged (DeviceWatch) or we are
+        told to quit. Tears down every per-session thread and the device handle on the way out;
+        the tray (spawned in run()) outlives the session."""
+        import usb.util
+        import display as D
+        import bars_live as BL
+        dbg = self.dbg
+
+        # Fresh per-session state so a replug starts clean (the process/tray persist).
+        self.queue = []
+        self.dirty41 = set()
+        self.dirty30 = set()
+        self.meters = [None] * 4
+        self.meter_key = [None] * 4
+        self.meter_pending = [None] * 4
+        self.peaks = [0.0] * 4
+        self.pk_t = [0.0] * 4
+        self.last_touch = [0.0] * 4
+        self.last_sync = 0.0
+        self.vol_until = [0.0] * 4
+        self.vol_shown = [None] * 4
+
         init_states = [lane_state(m) for m in self.lane_matches()]
         self.lanes = [{"pct": min(100, s["pct"]), "muted": s["muted"]} for s in init_states]
         self.worker = AudioWorker(self.verbose, dbg)
@@ -1033,37 +1159,14 @@ class UI:
                              for k in range(4)), self.vu_gain))
 
         wake = wake_lite()
-        # Emulate a fresh replug: launch 1 after replug always works, but run 4 showed a
-        # RELAUNCH starts with dead input (state left behind by the previous run's endpoint).
-        # A USB reset restores the power-on state every launch.
-        try:
-            d0 = usbdev.find(idVendor=D.VID, idProduct=D.PID)
-            if d0 is not None:
-                d0.reset()
-                usb.util.dispose_resources(d0)
-                time.sleep(0.5)
-                dbg.log("USB reset at startup ok")
-        except Exception as e:
-            print("  (usb reset at startup failed: %s)" % e)
-            dbg.log("USB reset failed: %s", e)
-        dev, ep = D.open_ep()
-        try:                                 # input side: claim iface0 on the SAME handle
-            if dev.is_kernel_driver_active(S.IFACE):
-                dev.detach_kernel_driver(S.IFACE)
-        except Exception:
-            pass
-        usb.util.claim_interface(dev, S.IFACE)
-        try:
-            dev.clear_halt(S.EP_IN)          # belt-and-braces: un-wedge the input endpoint
-        except Exception as e:
-            dbg("startup clear_halt: %s", e)
         reader = InputReader(dev, dbg)
         reader.start()                       # capture input from t0; events drain after wake
 
         sched = D.Scheduler(ep)
         pulse_ev = PulseEvents(dbg)
         pulse_ev.start()
-        tray = spawn_tray(self.cfgpath, dbg) if self.tray else None
+        devwatch = DeviceWatch(D.VID, D.PID)
+        devwatch.start()                     # 1 Hz USB presence poll, OFF the cadence
         istate = {"mask": 0, "pos": [None] * 4, "acc": [0] * 4, "cps": self.cps}
         print("wake-lite replay (%d init frames, app elements cut)..." % len(wake))
         for i in range(25):
@@ -1080,6 +1183,10 @@ class UI:
         last_mon = last
         try:
             while True:
+                if devwatch.gone:            # unplugged -> end the session, drop to tray idle
+                    print("  device removed — stopping audio/input/routing")
+                    dbg.log("device removed -> tray idle")
+                    break
                 now = time.monotonic()
                 if now - last > STALL_S:     # cadence broke -> panel has blanked; re-light it
                     print("  cadence stalled %.2fs — re-lighting panel" % (now - last))
@@ -1170,14 +1277,11 @@ class UI:
                 else:
                     dbg.count("tx_hb")
                     sched.send(sm.heartbeat())
-        except KeyboardInterrupt:
-            print("\nstopping.")
-        finally:
+        finally:                             # KeyboardInterrupt propagates to run()'s supervisor
             dbg.stats()
             reader.stop = True
+            devwatch.stop = True
             pulse_ev.close()
-            if tray and tray.poll() is None:
-                tray.terminate()
             for mlist in self.meters:
                 for m in mlist or ():
                     m.close()
@@ -1189,9 +1293,16 @@ class UI:
                 if res[0] == "meter":
                     for m in res[3] or ():
                         m.close()
-            usb.util.release_interface(dev, D.IFACE)
-            usb.util.release_interface(dev, S.IFACE)
-            usb.util.dispose_resources(dev)
+            self.worker.q.put(None)          # stop the worker thread (no leak across replugs)
+            for iface in (D.IFACE, S.IFACE):
+                try:
+                    usb.util.release_interface(dev, iface)
+                except Exception:            # device already gone on unplug -> release is moot
+                    pass
+            try:
+                usb.util.dispose_resources(dev)
+            except Exception:
+                pass
             print("done (panel blanks without heartbeats).")
 
 

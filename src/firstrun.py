@@ -269,21 +269,19 @@ def _check_config(cfgpath):
 
 
 def _check_device():
-    """Wait until a supported Hercules Stream device is accessible; returns its descriptor
-    (devices.Device). The udev rule covers the whole family (e053/e054/e055), so the same
-    install path serves the Stream 100 and the Stream 200 XLR."""
+    """Return the accessible device descriptor (devices.Device) if one is attached, or None when
+    nothing supported is plugged in — the daemon then idles in the tray with all functionality
+    off and starts the moment a device is hotplugged (no nagging dialog). sys.exit only on an
+    unresolved permission problem. The udev rule covers the whole family (e053/e054/e055), so
+    one install path serves the Stream 100 and the Stream 200 XLR."""
     while True:
         usable, denied = _scan()
         if usable:
             return usable
         if denied is None:
-            # nothing supported is plugged in
-            if not _ask("Device not found",
-                        "No Hercules Stream device is connected (Stream 100 06f8:e053, or "
-                        "Stream 200 XLR 06f8:e054).\nPlug it in, then choose Yes to retry."):
-                sys.exit("No Hercules Stream device found (06f8:e053/e054). Is it plugged in?")
-            time.sleep(0.5)
-            continue
+            # Nothing supported is plugged in: don't nag. The daemon idles in the tray with all
+            # functionality off and brings the device up on hotplug (the supervisor in ui.py).
+            return None
         # present but EACCES on the node
         if os.path.exists(RULE_DST):
             if not _ask("No device access",
@@ -310,8 +308,10 @@ def _check_device():
 
 
 def preflight(cfgpath):
-    """All startup checks. Returns the accessible device descriptor (devices.Device) when the
-    daemon can proceed; sys.exits otherwise. The caller dispatches on `desc.kind`."""
+    """All startup checks. Returns the accessible device descriptor (devices.Device), or None
+    when no device is attached (the daemon idles in the tray until one is hotplugged); sys.exits
+    on an unresolved tools/config/permission problem. The caller dispatches on `desc.kind` and
+    treats None as 'no device yet'."""
     _check_tools()
     _check_config(cfgpath)
     return _check_device()
