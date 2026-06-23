@@ -22,8 +22,11 @@ project naming is variant-neutral so further Stream models can land later.
   `src/sm.py` and validated against the op grammar in `src/op_walk.py`.
 - **The daemon**: `src/ui.py` (launched via `./start.sh`) ties it together — knobs/buttons drive
   per-app PipeWire volume/mute, the panel shows pages of icons/labels/volume arcs, and per-lane
-  VU bars meter each lane's own audio stream. **v1 is feature-complete with no known runtime
-  bugs**; released as v1.0.0 — AppImage on GitHub Releases (see "Status & open items").
+  VU bars meter each lane's own audio stream. It is **hotplug-aware**: with no device attached it
+  idles in the tray with everything off (no audio worker / input / metering / lane matching) and
+  brings the full session up on attach, tearing it down on removal and resuming on replug. **v1 is
+  feature-complete with no known runtime bugs**; released as v1.0.0 — AppImage on GitHub Releases
+  (see "Status & open items").
 
 There is no build system — plain Python. The runtime is fully self-contained: `src/` + `icons/`
 + `fonts/` (the 32 verbatim panel wake/init frames are embedded in `src/wake_data.py`).
@@ -45,6 +48,12 @@ every send); route all device traffic through it.
 **Nothing in the 20 ms slot loop may block.** The panel has no framebuffer — if the heartbeat
 cadence stalls the panel blanks (and heartbeats alone don't repaint it). All `pactl` calls,
 meter spawns, and other blocking work belong in the worker threads, never inline in the send loop.
+
+**An isochronous write to a removed device aborts the whole process.** On surprise removal pyusb
+feeds libusb a negative iso-packet count → `libusb_alloc_transfer` asserts → `SIGABRT`
+(uncatchable — no Python `except`, not even the supervisor's, can stop it). `Scheduler.send()`
+gates every isoc write on the device's usbfs node still existing and stops cleanly (`device_gone`)
+when it vanishes — never issue an isoc write without that guard.
 
 **Never change system audio as a side-effect.** The daemon sets volumes only because the user
 turned a knob (OS-authoritative: set → read back → display; capped at 100%). Metering is
@@ -172,8 +181,9 @@ packets (firmware length cap 0x2C9F):
   multi-packet `pack_sm`). `python3 src/sm.py` = acceptance tests.
 - `src/op_walk.py` — op grammar / frame validator.
 - `src/vu_crc.py` — the CRC (`fix_frame`, `validate`).
-- `src/display.py` — `Scheduler` (20 ms cadence, owns seq + CRC on every send), panel wake,
-  image display. `src/wake_data.py` — embedded verbatim wake frames.
+- `src/display.py` — `Scheduler` (20 ms cadence, owns seq + CRC on every send; gates each isoc
+  write on the device's usbfs node so a surprise removal can't `abort()` the process — sets
+  `device_gone`), panel wake, image display. `src/wake_data.py` — embedded verbatim wake frames.
 - `src/codec_decode.py` / `codec_encode.py` — background image codec (palette + tile interlace).
   `src/codec_element.py` — icon/label/gauge RLE codec.
 - `src/pcapdec.py` — dependency-free USBPcap/pcapng parser; the codec / `op_walk` / `display`
@@ -184,31 +194,42 @@ packets (firmware length cap 0x2C9F):
   libusb). All daemon device-opens (`stream100.open_device`, `display.open_ep`, the startup
   reset in `ui.py`) go through it.
 - `src/tray.py` — system-tray icon (SNI + DBusMenu over dbus-next; separate process; see
-  "Tray" above).
+  "Tray" above). Greys its icon while the daemon is idle (no device): the daemon publishes
+  `idle`/`active` to `$XDG_RUNTIME_DIR/hercules-stream.state` (passed as `--state-file`) and the
+  tray polls it. (The config editor no longer exposes a tray on/off toggle — `tray` stays in
+  `config.toml` and is still honored.)
 - `src/configui.py` — Tkinter config editor with a live panel preview + comment-preserving
   TOML save (see [docs/RUNTIME.md](docs/RUNTIME.md)). `python3 src/configui.py` opens it standalone.
 - `src/daemonctl.py` — find/restart the running daemon (reads its pid from the single-instance
   lock file, relaunches via the tray's mechanism); used by the editor's **Apply & Restart**.
 - `src/bars_live.py` — non-blocking per-lane `parec` peak reader (`Meter` / `to_byte`); the
   daemon's live VU source (used by `ui.py`).
-- `src/ui.py` — the daemon. One 20 ms slot loop sends exactly one frame per slot
-  (queue > dirty op41/op30 > op40 VU every 2nd slot > heartbeat). Threads keep the loop
-  non-blocking: **InputReader** (blocking 1 s EP 0x81 reads), **AudioWorker** (owns all pactl;
+- `src/ui.py` — the daemon. `run()` is a **hotplug supervisor**: render assets + spawn the tray
+  ONCE, then loop `_wait_for_device` (idle, everything off) → `_serve` (one device session) → idle
+  again on removal; any session-fatal exception is isolated so it can never kill the daemon (the
+  PDEATHSIG'd tray would die with it). Each `_serve` runs one 20 ms slot loop sending exactly one
+  frame per slot (queue > dirty op41/op30 > op40 VU every 2nd slot > heartbeat). Threads keep the
+  loop non-blocking: **InputReader** (blocking 1 s EP 0x81 reads), **AudioWorker** (owns all pactl;
   read→clamp→set→readback), **PulseEvents** (`pactl subscribe`; kills VU taps bound to removed
   streams instantly — a dead `parec --monitor-stream` tap gets relinked by PipeWire to a sink
-  monitor and would meter everything). VU = per-lane `parec` taps, volume-relative by default,
-  instant-attack/hold/fall peak-cap ballistics. `--debug` for trace logging.
+  monitor and would meter everything), **DeviceWatch** (1 Hz usbfs presence poll, off the cadence,
+  flags removal). VU = per-lane `parec` taps, volume-relative by default, instant-attack/hold/fall
+  peak-cap ballistics. `main()` enables `faulthandler` → `logs/crash.log` (a C-level abort leaves a
+  thread dump). `--debug` for trace logging.
 
 ## Status & open items
 
 v1 is feature-complete and hardware-verified (input, pages, volume/mute, per-lane VU, colors,
 icons); the graphical config editor and AppImage packaging are implemented, and **v1.0.0 is
 published on GitHub Releases** — CI runs the offline selftests on every push, and a `v*` tag builds
-the AppImage and publishes a Release with notes pulled from `CHANGELOG.md`. Full status — what's
-verified on hardware, the VU-color model, op32/protocol minutiae, and remaining (hardware-gated
-Stream 200) work — lives in **[docs/STATUS.md](docs/STATUS.md)**. When you verify or
-disprove something on hardware, record it there; if it's load-bearing wire-format, update the
-Architecture section above too.
+the AppImage and publishes a Release with notes pulled from `CHANGELOG.md`. **Post-v1.0.0:**
+device-less tray-idle + bidirectional hotplug (hardware-verified — unplug/replug no longer kills
+the daemon; the prior libusb isoc-`abort()` on removal is fixed via the usbfs-node gate), a greyed
+tray icon while idle, the tray toggle dropped from the config editor, and `faulthandler` crash
+logging. Full status — what's verified on hardware, the VU-color model, op32/protocol minutiae, and
+remaining (hardware-gated Stream 200) work — lives in **[docs/STATUS.md](docs/STATUS.md)**. When you
+verify or disprove something on hardware, record it there; if it's load-bearing wire-format, update
+the Architecture section above too.
 
 **Stream 200 XLR (06f8:e054) — EXPERIMENTAL, NOT yet hardware-verified.** A second variant is
 wired in so testers can run it: `src/devices.py` detects e053-vs-e054 and `ui.py`/`firstrun.py`

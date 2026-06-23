@@ -7,6 +7,17 @@ it's load-bearing wire-format, update [../CLAUDE.md](../CLAUDE.md)'s Architectur
 
 - **Runtime: feature-complete** (daemon v1) — input, pages, volume/mute, per-lane VU, colors,
   custom icons, mic lanes, multi-stream lanes, relink guard all hardware-confirmed.
+- **Tray-idle + bidirectional hotplug** ✅ (hardware-verified 2026-06-23) — with no device the
+  daemon idles in the tray, all functionality off (no audio worker / input / metering / lane
+  matching); it brings a session up on attach, tears it down on removal, and resumes on replug.
+  Fixed the libusb `abort()` this exposed: an isochronous write to a surprise-removed device makes
+  pyusb pass a negative iso-packet count to `libusb_alloc_transfer` (SIGABRT, uncatchable) —
+  `Scheduler.send` now gates every isoc write on the device's usbfs node still existing.
+- **Tray idle icon** ✅ — greyed/dimmed while idle, normal while serving; daemon publishes
+  `idle`/`active` to `$XDG_RUNTIME_DIR/hercules-stream.state`, the tray polls it. The config
+  editor's tray on/off toggle was removed (the `tray` key stays in config.toml and is honored).
+- **Crash logging** ✅ — `faulthandler` dumps every thread's stack to `logs/crash.log` on a fatal
+  signal (so a future C-level abort self-records instead of dying silently).
 - **AppImage packaging** ✅ — built + hardware-verified 2026-06-11.
 - **Git + GitHub** ✅ — public repo `cont1nuity/hercules-stream-linux` (GPL-3.0) + private
   `…-dev` for RE material; `.gitignore` keeps `dev/`/`config.toml`/build scratch out of the

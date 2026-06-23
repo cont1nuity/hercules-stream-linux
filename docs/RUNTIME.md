@@ -63,10 +63,12 @@ Runs on every daemon start (`--no-preflight` skips). Before touching the device,
 tools (`pactl`/`parec` — offers a pkexec install of the distro's client-tools package,
 pacman/apt-get/dnf/zypper detected, `libpulse` / `pulseaudio-utils`; manual hint on SteamOS or
 unknown distros), offers to create the live config from `config.example.toml`, and sorts out
-device access — "not plugged in" gets a retry prompt, an EACCES on the USB node gets an offer to
-install the udev rule via **pkexec** (native polkit password dialog; the root helper + rule are
-copied to a temp dir first because root cannot read inside the AppImage's FUSE mount), then a
-wait-for-access / replug-retry loop, and the daemon continues. Dialogs are kdialog/zenity
+device access — "not plugged in" no longer blocks or prompts: preflight returns `None` and the
+daemon idles in the tray (everything off) until a device is hotplugged (see the hotplug supervisor
+in the Architecture notes). An EACCES on the USB node still gets an offer to install the udev rule
+via **pkexec** (native polkit password dialog; the root helper + rule are copied to a temp dir
+first because root cannot read inside the AppImage's FUSE mount), then a wait-for-access /
+replug-retry loop, and the daemon continues. Dialogs are kdialog/zenity
 (detected), console prompts on a TTY, or a non-interactive fallback (auto-creates the config,
 fails loud on blockers) so login-autostart runs self-heal. The config carries a `config_version`
 marker (currently 1, `CONFIG_VERSION` in `ui.py`); missing keys always take built-in defaults at
@@ -92,7 +94,11 @@ rewritten each start so Exec tracks AppImage vs `start.sh`; opt-out remembered v
 the XDG state dir), **Restart** (relaunch the daemon to apply config edits — spawns a detached
 relauncher that waits for the current daemon to exit and release the single-instance flock, then
 execs `launch_cmd()`, since `single_instance()` takes the flock non-blocking), and Quit
-(SIGTERM → clean shutdown). Tray stderr lands in `<logs>/tray.err`.
+(SIGTERM → clean shutdown). Tray stderr lands in `<logs>/tray.err`. While the daemon is **idle**
+(no device attached) the tray **greys/dims its icon**, switching back to the normal icon while a
+device is served: the daemon publishes `idle`/`active` to `$XDG_RUNTIME_DIR/hercules-stream.state`
+(passed as `--state-file`) and the tray polls it (~1 s). The `tray` on/off setting lives only in
+`config.toml` now — the config editor no longer shows a checkbox for it.
 
 ## Config editor (`src/configui.py`, Tkinter)
 
