@@ -90,7 +90,6 @@ UI_TIPS = {
     "vu_scale": "Scale each bar by the lane's volume: a full signal tops out at the volume "
         "level (muted lane → no bar), like the vendor UI. Off = absolute level.",
     "mute_blink": "When a lane is muted, blink its action-button LED.",
-    "tray": "Show the system-tray icon (config quick-open, start-at-login, restart, quit).",
     "vu_gain": "Input gain applied before metering — higher makes the bars react sooner.",
     "vu_release": "Bar fall smoothing per frame: 0 = raw/snappy, 0.95 = very slow.",
     "vu_band_from": "The orange warning band starts at this % of the FULL bar, up to the "
@@ -606,10 +605,12 @@ class ConfigUI:
 
         tg = ttk.Frame(f)
         tg.pack(fill="x", pady=6)
+        # [ui] tray is honored by the daemon and kept in config.toml, but intentionally NOT
+        # exposed here — _sync_all merges into cfg["ui"], so the on-disk value round-trips
+        # untouched. Edit the file to toggle the tray icon.
         for key, lbl, dflt in [("vu", "VU meters", True),
                                ("vu_scale", "Scale bar by volume", True),
-                               ("mute_blink", "Mute → button LED blink", True),
-                               ("tray", "Tray icon", True)]:
+                               ("mute_blink", "Mute → button LED blink", True)]:
             var = tk.BooleanVar(value=bool(ui.get(key, dflt)))
             self.ui_vars[key] = var
             var.trace_add("write", self.schedule)
