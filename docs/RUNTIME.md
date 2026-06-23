@@ -27,6 +27,14 @@ host needs bash, curl, rsvg-convert; downloads cache in `build/cache/`; release 
 run on the oldest supported distro (libusb is copied from the build host). The build stamps
 `VERSION` in the payload's `ui.py`.
 
+**Auto-update.** The build also embeds AppImage **update-information** — the `gh-releases-zsync`
+transport pointing at this repo's `latest` release — and appimagetool writes a `.zsync` file next
+to the AppImage, so `AppImageUpdate` / `appimageupdatetool` can delta-update an installed AppImage
+in place. The release workflow installs `zsync` (for `zsyncmake`) and uploads the `.zsync` asset
+beside the AppImage; a local build without `zsync` still embeds the update-info but skips the
+`.zsync`. The tray's **Check for updates…** item (AppImage runs only) drives it — see the tray
+section below.
+
 ## Build overrides & feature flags (`src/features.py`)
 
 Some settings are resolved through a three-layer chain — **highest wins**:
@@ -91,7 +99,9 @@ silently if dbus-next or the session bus is missing — daemon runs fine trayles
 config file** (raw `xdg-open`, also the fallback when Tk/PIL are unavailable), a **Start at
 login** checkbox (XDG autostart entry `~/.config/autostart/hercules-stream.desktop`, default ON,
 rewritten each start so Exec tracks AppImage vs `start.sh`; opt-out remembered via a marker in
-the XDG state dir), **Restart** (relaunch the daemon to apply config edits — spawns a detached
+the XDG state dir), a **Check for updates…** item (AppImage runs only — hands off to
+`appimageupdatetool` / `AppImageUpdate` if installed, else opens the Releases page; see "Auto-update"
+above), **Restart** (relaunch the daemon to apply config edits — spawns a detached
 relauncher that waits for the current daemon to exit and release the single-instance flock, then
 execs `launch_cmd()`, since `single_instance()` takes the flock non-blocking), and Quit
 (SIGTERM → clean shutdown). Tray stderr lands in `<logs>/tray.err`. While the daemon is **idle**

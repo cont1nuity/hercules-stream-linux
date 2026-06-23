@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-06-23
+
+### Added
+- **AppImage auto-update** — the AppImage embeds update-information for the GitHub-releases zsync
+  transport and ships a `.zsync` asset, so `AppImageUpdate` / `appimageupdatetool` delta-updates
+  it in place from the latest release. The tray gains a **Check for updates…** item (AppImage runs
+  only) that invokes the updater if installed, else opens the Releases page. Takes effect for
+  releases built from this version onward.
+
 ## [1.1.0] - 2026-06-23
 
 ### Added
@@ -61,6 +70,7 @@ reverse-engineered from the Windows *Hercules Stream Control* app.
 - **Stream 200 XLR** (`06f8:e054`) — experimental backend behind a feature flag
   (off by default): telemetry-driven audio control; on-panel display not yet implemented.
 
-[Unreleased]: https://github.com/cont1nuity/hercules-stream-linux/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/cont1nuity/hercules-stream-linux/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/cont1nuity/hercules-stream-linux/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/cont1nuity/hercules-stream-linux/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/cont1nuity/hercules-stream-linux/releases/tag/v1.0.0

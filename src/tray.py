@@ -10,13 +10,15 @@ watcher, or dbus_next — the daemon runs fine trayless.
 Left click  -> open the graphical config editor (configui.py; falls back to the raw file).
 Right click -> menu: version, Configure… / Edit config file, 'Start at login' checkbox
 (an XDG autostart entry, see autostart_* below; DEFAULT ON — created on first tray run
-unless the user has unchecked it before), Restart (relaunch the daemon, e.g. to apply
-config edits), Quit (SIGTERM to the daemon).
+unless the user has unchecked it before), 'Check for updates…' (AppImage runs only — hands off
+to AppImageUpdate if present, else opens the Releases page), Restart (relaunch the daemon, e.g.
+to apply config edits), Quit (SIGTERM to the daemon).
 
 Usage (by ui.py): tray.py --pid <daemon> --config <path> --version <v> --icon <png/svg>
 """
 import asyncio
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -27,12 +29,13 @@ from paths import ROOT, XDG_CONFIG, XDG_STATE, LOGS
 
 APP_ID = "hercules-stream"
 APP_NAME = "Hercules Stream"
+RELEASES_URL = "https://github.com/cont1nuity/hercules-stream-linux/releases/latest"
 ITEM_PATH = "/StatusNotifierItem"
 MENU_PATH = "/MenuBar"
 WATCHER = "org.kde.StatusNotifierWatcher"
 
 # menu item ids
-MI_INFO, MI_CONFIG, MI_EDIT, MI_AUTOSTART, MI_SEP, MI_RESTART, MI_QUIT = 1, 2, 3, 4, 5, 6, 7
+MI_INFO, MI_CONFIG, MI_EDIT, MI_AUTOSTART, MI_SEP, MI_UPDATE, MI_RESTART, MI_QUIT = 1, 2, 3, 4, 5, 6, 7, 8
 
 
 def die_with_parent():
@@ -279,7 +282,7 @@ class Sni(ServiceInterface):
 
 
 class Menu(ServiceInterface):
-    """com.canonical.dbusmenu with a fixed 6-item menu."""
+    """com.canonical.dbusmenu menu ('Check for updates…' appears only for AppImage runs)."""
 
     def __init__(self, cfgpath, daemon_pid, quit_ev):
         super().__init__("com.canonical.dbusmenu")
@@ -307,6 +310,8 @@ class Menu(ServiceInterface):
                     "toggle-state": Variant("i", 1 if autostart_enabled() else 0)}
         if mid == MI_SEP:
             return {"type": Variant("s", "separator")}
+        if mid == MI_UPDATE:
+            return {"label": Variant("s", "Check for updates…")}
         if mid == MI_RESTART:
             return {"label": Variant("s", "Restart %s" % APP_NAME)}
         if mid == MI_QUIT:
@@ -314,8 +319,11 @@ class Menu(ServiceInterface):
         return {"children-display": Variant("s", "submenu")}        # root
 
     def _layout(self):
-        kids = [Variant("(ia{sv}av)", [mid, self._props(mid), []])
-                for mid in (MI_INFO, MI_CONFIG, MI_EDIT, MI_AUTOSTART, MI_SEP, MI_RESTART, MI_QUIT)]
+        ids = [MI_INFO, MI_CONFIG, MI_EDIT, MI_AUTOSTART, MI_SEP]
+        if os.environ.get("APPIMAGE"):          # in-place updates only make sense for the AppImage
+            ids.append(MI_UPDATE)
+        ids += [MI_RESTART, MI_QUIT]
+        kids = [Variant("(ia{sv}av)", [mid, self._props(mid), []]) for mid in ids]
         return [0, self._props(0), kids]
 
     # ---- actions ----
@@ -360,6 +368,8 @@ class Menu(ServiceInterface):
             self.revision += 1
             self.ItemsPropertiesUpdated()
             self.LayoutUpdated()
+        elif mid == MI_UPDATE:
+            self._check_updates()
         elif mid == MI_RESTART:
             self._restart()
         elif mid == MI_QUIT:
@@ -368,6 +378,20 @@ class Menu(ServiceInterface):
             except Exception:
                 pass
             self.quit_ev.set()
+
+    def _check_updates(self):
+        """AppImage only: hand off to AppImageUpdate for an in-place delta update if the tool is
+        installed, else open the Releases page. The AppImage carries embedded update-information
+        (baked by packaging/build-appimage.sh), so the updater needs nothing but the AppImage
+        path."""
+        appimage = os.environ.get("APPIMAGE")
+        tool = shutil.which("appimageupdatetool") or shutil.which("AppImageUpdate")
+        target = [tool, appimage] if (appimage and tool) else ["xdg-open", RELEASES_URL]
+        try:
+            subprocess.Popen(target, start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
 
     def _restart(self):
         """Relaunch the daemon. single_instance() takes the flock NON-blocking, so a new
@@ -417,7 +441,7 @@ class Menu(ServiceInterface):
 
     @method()
     def GetGroupProperties(self, ids: "ai", names: "as") -> "a(ia{sv})":
-        ids = ids or [0, MI_INFO, MI_CONFIG, MI_EDIT, MI_AUTOSTART, MI_SEP, MI_RESTART, MI_QUIT]
+        ids = ids or [0, MI_INFO, MI_CONFIG, MI_EDIT, MI_AUTOSTART, MI_SEP, MI_UPDATE, MI_RESTART, MI_QUIT]
         return [[i, self._props(i)] for i in ids]
 
     @method()

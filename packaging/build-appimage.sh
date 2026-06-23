@@ -227,10 +227,14 @@ EOF
 rsvg-convert -w 256 -h 256 "$ROOT/icons/hercules.svg" -o "$APPDIR/hercules-stream.png"
 ln -sf hercules-stream.png "$APPDIR/.DirIcon"
 
-# 8) pack
+# 8) pack — embed AppImage update-information so AppImageUpdate can delta-update in place from
+#    the latest GitHub release; appimagetool also writes <OUT>.zsync when zsyncmake (apt 'zsync')
+#    is on PATH (the release workflow installs it; a local build without it just skips the .zsync).
 OUT="$DIST/Hercules-Stream-Linux-$VERSION-$ARCH.AppImage"
-rm -f "$OUT"     # unlink first: overwriting a RUNNING AppImage fails with ETXTBSY
-ARCH=$ARCH "$AIT" --appimage-extract-and-run "$APPDIR" "$OUT"
+UPDATE_INFO="gh-releases-zsync|cont1nuity|hercules-stream-linux|latest|Hercules-Stream-Linux-*-$ARCH.AppImage.zsync"
+rm -f "$OUT" "$OUT.zsync"     # unlink first: overwriting a RUNNING AppImage fails with ETXTBSY
+ARCH=$ARCH "$AIT" --appimage-extract-and-run -u "$UPDATE_INFO" "$APPDIR" "$OUT"
+[ -f "$OUT.zsync" ] || echo ">> note: no .zsync produced (install 'zsync' to enable delta updates)"
 echo ""
 echo ">> built $OUT"
 echo ">> first run on a new machine: install the udev rule once —"

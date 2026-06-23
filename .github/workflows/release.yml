@@ -19,7 +19,7 @@ jobs:
       - name: Install build deps
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq librsvg2-bin libusb-1.0-0 curl
+          sudo apt-get install -y -qq librsvg2-bin libusb-1.0-0 curl zsync
       - name: Build AppImage
         run: bash packaging/build-appimage.sh "${GITHUB_REF_NAME#v}"
       - name: Compose release notes from CHANGELOG.md
@@ -43,8 +43,8 @@ jobs:
           title="Hercules Stream for Linux ${tag#v}"
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release edit "$tag" --title "$title" --notes-file notes.md
-            gh release upload "$tag" dist/Hercules-Stream-Linux-*-x86_64.AppImage --clobber
+            gh release upload "$tag" dist/Hercules-Stream-Linux-*-x86_64.AppImage* --clobber
           else
-            gh release create "$tag" dist/Hercules-Stream-Linux-*-x86_64.AppImage \
+            gh release create "$tag" dist/Hercules-Stream-Linux-*-x86_64.AppImage* \
               --title "$title" --notes-file notes.md
           fi
