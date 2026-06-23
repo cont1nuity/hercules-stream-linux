@@ -22,10 +22,11 @@ jobs:
       - name: Offline selftests (CRC gate + op grammar, no hardware)
         # src/sm.py is intentionally omitted: its byte-match acceptance test reads USB
         # captures from the private dev/ repo, absent in the public checkout. The
-        # maintainer runs it locally; the five below are self-contained.
+        # maintainer runs it locally; the six below are self-contained.
         run: |
           python src/vu_crc.py
           python src/element_test.py --selftest
           python src/ui.py --selftest
           python src/stream200.py selftest
           python src/sm200.py
+          python src/tray.py --selftest

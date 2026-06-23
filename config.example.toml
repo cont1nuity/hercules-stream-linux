@@ -41,6 +41,8 @@ verbose         = false  # log each action
 # per-page icons/labels fields are optional. stream100.py `run` ignores them.
 [ui]
 brightness     = 80     # panel backlight 0..100 at startup (op31; 0 powers the panel OFF)
+check_updates  = true   # AppImage only: on startup check GitHub for a newer release and notify
+                        # (the tray's "Check for updates automatically" toggles this too)
 # Live VU bars (READ-ONLY metering via parec): bar k always meters lane k's OWN audio —
 # app lanes meter that app's stream (--monitor-stream), "default" lanes meter the default
 # output (@DEFAULT_MONITOR@). Meters follow apps as their streams come and go.

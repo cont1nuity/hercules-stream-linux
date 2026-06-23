@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-06-23
+
+### Added
+- **Update notification** — on startup the tray checks GitHub for a newer release (AppImage runs
+  only) without using the API (a `HEAD` on `/releases/latest`, no token/rate-limit) and, if one
+  exists, shows a desktop notification and relabels its menu item to "Update available: vX.Y.Z".
+  Toggle it via the tray's **Check for updates automatically** checkmark or `[ui] check_updates`
+  (default on) on the config editor's Display tab.
+
 ## [1.1.1] - 2026-06-23
 
 ### Added
@@ -70,7 +79,8 @@ reverse-engineered from the Windows *Hercules Stream Control* app.
 - **Stream 200 XLR** (`06f8:e054`) — experimental backend behind a feature flag
   (off by default): telemetry-driven audio control; on-panel display not yet implemented.
 
-[Unreleased]: https://github.com/cont1nuity/hercules-stream-linux/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/cont1nuity/hercules-stream-linux/compare/v1.1.2...HEAD
+[1.1.2]: https://github.com/cont1nuity/hercules-stream-linux/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/cont1nuity/hercules-stream-linux/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/cont1nuity/hercules-stream-linux/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/cont1nuity/hercules-stream-linux/releases/tag/v1.0.0

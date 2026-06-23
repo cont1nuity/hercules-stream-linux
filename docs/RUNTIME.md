@@ -32,8 +32,17 @@ transport pointing at this repo's `latest` release — and appimagetool writes a
 to the AppImage, so `AppImageUpdate` / `appimageupdatetool` can delta-update an installed AppImage
 in place. The release workflow installs `zsync` (for `zsyncmake`) and uploads the `.zsync` asset
 beside the AppImage; a local build without `zsync` still embeds the update-info but skips the
-`.zsync`. The tray's **Check for updates…** item (AppImage runs only) drives it — see the tray
-section below.
+`.zsync`. The tray's **Check for updates…** item (AppImage runs only) drives the install — see the
+tray section below.
+
+On tray startup (AppImage runs only, honoring `[ui] check_updates`, default on) a lightweight check
+runs off the dbus loop: a `HEAD` on `…/releases/latest` follows the 302 to `…/tag/vX.Y.Z`, so it
+reads the newest tag **without the GitHub API** (no token, no rate limit). If that's newer than the
+running `--version`, the tray fires a desktop notification (`notify-send`, skipped if libnotify is
+absent) and relabels its item to **Update available: vX.Y.Z — install now**. The check is
+best-effort — any network/SSL failure just no-ops. It is toggled by `[ui] check_updates`, editable
+two ways (kept in sync, single source = `config.toml`): the tray's **Check for updates
+automatically** checkmark and the config editor's Display tab.
 
 ## Build overrides & feature flags (`src/features.py`)
 
@@ -99,7 +108,8 @@ silently if dbus-next or the session bus is missing — daemon runs fine trayles
 config file** (raw `xdg-open`, also the fallback when Tk/PIL are unavailable), a **Start at
 login** checkbox (XDG autostart entry `~/.config/autostart/hercules-stream.desktop`, default ON,
 rewritten each start so Exec tracks AppImage vs `start.sh`; opt-out remembered via a marker in
-the XDG state dir), a **Check for updates…** item (AppImage runs only — hands off to
+the XDG state dir), a **Check for updates automatically** checkmark and a **Check for updates…**
+item (both AppImage runs only — the checkmark toggles `[ui] check_updates`; the item hands off to
 `appimageupdatetool` / `AppImageUpdate` if installed, else opens the Releases page; see "Auto-update"
 above), **Restart** (relaunch the daemon to apply config edits — spawns a detached
 relauncher that waits for the current daemon to exit and release the single-instance flock, then

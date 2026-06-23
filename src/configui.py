@@ -86,6 +86,8 @@ HEADER_TIPS = {
 }
 UI_TIPS = {
     "brightness": "Panel backlight 0–100 at startup. 0 powers the panel OFF.",
+    "check_updates": "AppImage only: on startup, check GitHub for a newer release and notify "
+                     "(the tray's 'Check for updates automatically' toggles this too).",
     "vu": "Show live VU meter bars — read-only metering of each lane's own audio.",
     "vu_scale": "Scale each bar by the lane's volume: a full signal tops out at the volume "
         "level (muted lane → no bar), like the vendor UI. Off = absolute level.",
@@ -610,7 +612,8 @@ class ConfigUI:
         # untouched. Edit the file to toggle the tray icon.
         for key, lbl, dflt in [("vu", "VU meters", True),
                                ("vu_scale", "Scale bar by volume", True),
-                               ("mute_blink", "Mute → button LED blink", True)]:
+                               ("mute_blink", "Mute → button LED blink", True),
+                               ("check_updates", "Check for updates on startup", True)]:
             var = tk.BooleanVar(value=bool(ui.get(key, dflt)))
             self.ui_vars[key] = var
             var.trace_add("write", self.schedule)

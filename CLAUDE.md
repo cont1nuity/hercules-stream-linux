@@ -74,6 +74,7 @@ python3 src/vu_crc.py              # CRC-16 self-test
 python3 src/element_test.py --selftest   # icon/label/slot-grid frames
 python3 src/stream200.py selftest  # Stream 200 XLR transport/decoder/control-map (no device)
 python3 src/sm200.py               # Stream 200 XLR display frame-builder (byte-match vs captured frames)
+python3 src/tray.py --selftest     # tray: update version-compare + [ui] config-key writer (no dbus/net)
 
 # Input side:
 python3 src/stream100.py info      # device descriptor / endpoint dump
