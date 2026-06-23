@@ -227,13 +227,15 @@ EOF
 rsvg-convert -w 256 -h 256 "$ROOT/icons/hercules.svg" -o "$APPDIR/hercules-stream.png"
 ln -sf hercules-stream.png "$APPDIR/.DirIcon"
 
-# 8) pack — embed AppImage update-information so AppImageUpdate can delta-update in place from
-#    the latest GitHub release; appimagetool also writes <OUT>.zsync when zsyncmake (apt 'zsync')
-#    is on PATH (the release workflow installs it; a local build without it just skips the .zsync).
+# 8) pack — embed AppImage update-information so AppImageUpdate can delta-update in place from the
+#    latest GitHub release. appimagetool writes the .zsync as <basename>.zsync into its CWD (NOT
+#    next to $OUT), so run it from $DIST to keep both artifacts together there. zsyncmake (apt
+#    'zsync') must be on PATH for the .zsync — the release workflow installs it; a local build
+#    without it still embeds the update-info but skips the .zsync.
 OUT="$DIST/Hercules-Stream-Linux-$VERSION-$ARCH.AppImage"
 UPDATE_INFO="gh-releases-zsync|cont1nuity|hercules-stream-linux|latest|Hercules-Stream-Linux-*-$ARCH.AppImage.zsync"
 rm -f "$OUT" "$OUT.zsync"     # unlink first: overwriting a RUNNING AppImage fails with ETXTBSY
-ARCH=$ARCH "$AIT" --appimage-extract-and-run -u "$UPDATE_INFO" "$APPDIR" "$OUT"
+( cd "$DIST" && ARCH=$ARCH "$AIT" --appimage-extract-and-run -u "$UPDATE_INFO" "$APPDIR" "$OUT" )
 [ -f "$OUT.zsync" ] || echo ">> note: no .zsync produced (install 'zsync' to enable delta updates)"
 echo ""
 echo ">> built $OUT"
