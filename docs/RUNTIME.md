@@ -2,8 +2,8 @@
 
 Operational reference for Hercules Stream for Linux — config/log locations, the AppImage
 build, first-run setup, the single-instance lock, the system tray, and the graphical config
-editor. The non-negotiable protocol **rules** and the **wire format** live in
-[../CLAUDE.md](../CLAUDE.md); this file is the on-demand detail behind them.
+editor. The non-negotiable protocol **rules** live in [../CLAUDE.md](../CLAUDE.md) and the **wire
+format** in [PROTOCOL.md](PROTOCOL.md); this file is the on-demand detail for the runtime/UI side.
 
 ## Config & log homes
 

@@ -3,7 +3,7 @@
 Implemented, hardware-verified state of Hercules Stream for Linux — **one line per shipped
 feature, done things only**. Plans, TODOs, and reverse-engineering findings live in the
 maintainer's private RE repo, not here. When you verify something on hardware, record it here; if
-it's load-bearing wire-format, update [../CLAUDE.md](../CLAUDE.md)'s Architecture section too.
+it's load-bearing wire-format, update [PROTOCOL.md](PROTOCOL.md) too.
 
 - **Runtime: feature-complete** (daemon v1) — input, pages, volume/mute, per-lane VU, colors,
   custom icons, mic lanes, multi-stream lanes, relink guard all hardware-confirmed.
