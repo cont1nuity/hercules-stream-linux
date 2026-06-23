@@ -724,16 +724,20 @@ def single_instance():
     return f
 
 
-def spawn_tray(cfgpath, dbg):
+def spawn_tray(cfgpath, dbg, state_path=None):
     """Tray icon (src/tray.py) runs as a SEPARATE process — the 20 ms slot loop can't
     host an event loop. The child binds itself to our lifetime (PDEATHSIG) and exits
-    silently when there is no session bus / dbus-next; the daemon runs fine trayless."""
+    silently when there is no session bus / dbus-next; the daemon runs fine trayless.
+    state_path: a file where the daemon publishes 'idle'/'active' so the tray greys its
+    icon while no device is attached (the daemon polls/writes it at session boundaries)."""
     icon = next((os.path.join(ICONS, n) for n in
                  ("hercules.png", "hercules.svg", "stream.png", "stream.svg")
                  if os.path.exists(os.path.join(ICONS, n))), "")
     cmd = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "tray.py"),
            "--pid", str(os.getpid()), "--config", cfgpath or "",
            "--version", VERSION, "--icon", icon]
+    if state_path:
+        cmd += ["--state-file", state_path]
     try:
         os.makedirs(LOGS, exist_ok=True)
         err = open(os.path.join(LOGS, "tray.err"), "wb")   # why a tray didn't appear
@@ -1039,10 +1043,15 @@ class UI:
         self.prerender(rend)
         # The tray is the ONLY thing alive during tray-idle; it tracks our (stable) pid across
         # plug/unplug cycles, so spawn it ONCE here — not per session.
-        tray = spawn_tray(self.cfgpath, self.dbg) if self.tray else None
+        import tempfile
+        self._state_path = os.path.join(
+            os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir(), "hercules-stream.state")
+        self._write_state("idle")                    # greyed tray icon until a session starts
+        tray = spawn_tray(self.cfgpath, self.dbg, self._state_path) if self.tray else None
         try:
             while True:
                 dev, ep = self._wait_for_device()    # idle in the tray until a device attaches
+                self._write_state("active")          # tray -> normal icon
                 try:
                     self._serve(dev, ep)             # 20 ms cadence; returns when it unplugs
                 except KeyboardInterrupt:
@@ -1052,12 +1061,16 @@ class UI:
                     # PDEATHSIG'd tray). _serve already tore the session down in its own finally.
                     print("  device session ended on error (%s) — back to tray idle" % e)
                     self.dbg.log("session error -> tray idle: %r", e)
-                    continue
+                self._write_state("idle")            # tray -> greyed icon
                 print("device removed — idling in the tray (audio/input/routing off); "
                       "replug to resume.")
         except KeyboardInterrupt:
             print("\nstopping.")
         finally:
+            try:
+                os.unlink(self._state_path)
+            except OSError:
+                pass
             if tray and tray.poll() is None:
                 tray.terminate()
 
@@ -1129,6 +1142,18 @@ class UI:
         except Exception as e:
             dbg("startup clear_halt: %s", e)
         return dev, ep
+
+    def _write_state(self, state):
+        """Publish daemon state ('idle' / 'active') for the tray (greyed vs normal icon). A tiny
+        runtime file, written only at session boundaries — never in the 20 ms loop."""
+        p = getattr(self, "_state_path", None)
+        if not p:
+            return
+        try:
+            with open(p, "w") as f:
+                f.write(state)
+        except OSError:
+            pass
 
     def _serve(self, dev, ep):
         """One device session: bring up the audio worker / input reader / VU taps, paint the

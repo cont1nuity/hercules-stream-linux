@@ -106,31 +106,62 @@ def autostart_default():
 
 # --------------------------------------------------------------------------- the icon
 
-def icon_pixmap(path):
-    """icon file -> SNI a(iiay) pixmap (ARGB32, network byte order). [] if unavailable."""
+def _load_icon_image(path):
+    """icon file -> PIL RGBA Image (rsvg-convert for .svg), or None if unavailable."""
     if not path or not os.path.exists(path):
-        return []
+        return None
     try:
+        from PIL import Image
         if path.lower().endswith(".svg"):
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as t:
                 tmp = t.name
             subprocess.run(["rsvg-convert", "-w", "32", "-h", "32", path, "-o", tmp],
                            check=True, capture_output=True)
-            path, cleanup = tmp, tmp
+            im = Image.open(tmp).convert("RGBA")
+            os.unlink(tmp)
         else:
-            cleanup = None
-        from PIL import Image
-        im = Image.open(path).convert("RGBA")
-        if cleanup:
-            os.unlink(cleanup)
-        raw = im.tobytes()
-        argb = bytearray()
-        for i in range(0, len(raw), 4):
-            r, g, b, a = raw[i:i + 4]
-            argb += bytes((a, r, g, b))
-        return [[im.width, im.height, bytes(argb)]]
+            im = Image.open(path).convert("RGBA")
+        return im
     except Exception:
+        return None
+
+
+def _greyed(im):
+    """Desaturated + dimmed copy of the icon — the 'idle / no device' look. Alpha preserved
+    (dimming the RGB only, never the alpha, or the icon would just go transparent)."""
+    if im is None:
+        return None
+    try:
+        from PIL import Image, ImageEnhance
+        r, g, b, a = im.split()
+        rgb = ImageEnhance.Brightness(
+            ImageEnhance.Color(Image.merge("RGB", (r, g, b))).enhance(0.0)).enhance(0.55)
+        return Image.merge("RGBA", (*rgb.split(), a))
+    except Exception:
+        return im
+
+
+def icon_pixmap(im):
+    """PIL RGBA Image -> SNI a(iiay) pixmap (ARGB32, network byte order). [] if None."""
+    if im is None:
         return []
+    raw = im.tobytes()
+    argb = bytearray()
+    for i in range(0, len(raw), 4):
+        r, g, b, a = raw[i:i + 4]
+        argb += bytes((a, r, g, b))
+    return [[im.width, im.height, bytes(argb)]]
+
+
+def read_state(path):
+    """Daemon-published state ('idle'/'active') for the icon; None if absent/unreadable."""
+    if not path:
+        return None
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return None
 
 
 # ----------------------------------------------------------------- D-Bus service objects
@@ -146,11 +177,20 @@ except ImportError as _e:                     # tray is optional — daemon runs
 
 
 class Sni(ServiceInterface):
-    def __init__(self, pixmap, tooltip_text):
+    def __init__(self, normal_px, greyed_px, tooltip_text):
         super().__init__("org.kde.StatusNotifierItem")
-        self._pixmap = pixmap
+        self._normal = normal_px
+        self._greyed = greyed_px
+        self._idle = False               # True when the daemon has no device -> greyed icon
         self._tip = tooltip_text
         self.on_activate = lambda: None
+
+    def set_idle(self, idle):
+        """Switch between the normal and greyed icon and tell the host to re-read it."""
+        if bool(idle) != self._idle:
+            self._idle = bool(idle)
+            self.NewIcon()
+            self.NewToolTip()
 
     @dbus_property(access=PropertyAccess.READ)
     def Category(self) -> "s":
@@ -178,7 +218,7 @@ class Sni(ServiceInterface):
 
     @dbus_property(access=PropertyAccess.READ)
     def IconPixmap(self) -> "a(iiay)":
-        return self._pixmap
+        return self._greyed if (self._idle and self._greyed) else self._normal
 
     @dbus_property(access=PropertyAccess.READ)
     def OverlayIconName(self) -> "s":
@@ -198,7 +238,8 @@ class Sni(ServiceInterface):
 
     @dbus_property(access=PropertyAccess.READ)
     def ToolTip(self) -> "(sa(iiay)ss)":
-        return ["", [], APP_NAME, self._tip]
+        tip = "No device connected — idle" if self._idle else self._tip
+        return ["", [], APP_NAME, tip]
 
     @dbus_property(access=PropertyAccess.READ)
     def ItemIsMenu(self) -> "b":
@@ -417,11 +458,15 @@ class Menu(ServiceInterface):
 VERSION = "dev"
 
 
-async def amain(daemon_pid, cfgpath, icon):
+async def amain(daemon_pid, cfgpath, icon, state_file):
     bus = await MessageBus().connect()
     quit_ev = asyncio.Event()
     menu = Menu(cfgpath, daemon_pid, quit_ev)
-    sni = Sni(icon_pixmap(icon), "version %s — config: %s" % (VERSION, cfgpath))
+    im = _load_icon_image(icon)
+    sni = Sni(icon_pixmap(im), icon_pixmap(_greyed(im)),
+              "version %s — config: %s" % (VERSION, cfgpath))
+    last_state = read_state(state_file)       # correct icon from the first paint (no flicker)
+    sni._idle = (last_state == "idle")
     sni.on_activate = menu.open_config_ui
     bus.export(MENU_PATH, menu)
     bus.export(ITEM_PATH, sni)
@@ -434,8 +479,12 @@ async def amain(daemon_pid, cfgpath, icon):
             os.kill(daemon_pid, 0)            # daemon gone -> tray goes too
         except OSError:
             break
+        st = read_state(state_file)           # daemon publishes idle/active at session boundaries
+        if st and st != last_state:
+            last_state = st
+            sni.set_idle(st == "idle")        # greyed when no device is attached
         try:
-            await asyncio.wait_for(quit_ev.wait(), 2.0)
+            await asyncio.wait_for(quit_ev.wait(), 1.0)
         except asyncio.TimeoutError:
             pass
 
@@ -448,10 +497,12 @@ def main():
     cfgpath = opt(a, "--config")
     VERSION = opt(a, "--version", "dev") or "dev"
     icon = opt(a, "--icon")
+    state_file = opt(a, "--state-file")
     if not daemon_pid:
-        sys.exit("usage: tray.py --pid <daemon> [--config p] [--version v] [--icon p]")
+        sys.exit("usage: tray.py --pid <daemon> [--config p] [--version v] [--icon p] "
+                 "[--state-file p]")
     autostart_default()
-    asyncio.run(amain(daemon_pid, cfgpath, icon))
+    asyncio.run(amain(daemon_pid, cfgpath, icon, state_file))
 
 
 if __name__ == "__main__":
