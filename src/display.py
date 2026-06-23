@@ -99,13 +99,28 @@ class Scheduler:
     """Precise absolute-deadline sender: each frame goes out on its 20 ms slot, no drift.
     Owns the SM seq counter (+1 per frame, like real HW — kills the carrier-loop seq repeat)
     and recomputes the SM CRC-16 on every outgoing frame (the device drops a stale-CRC frame)."""
-    def __init__(self, ep, seq0=1):
+    def __init__(self, ep, seq0=1, dev=None):
         self.ep = ep
         self.t0 = time.monotonic()
         self.slot = 0
         self.seq = seq0 & 0xFFFF       # real HW starts a session at seq=1 (baseline capture)
+        # Surprise-removal guard. An isochronous OUT on a yanked device makes pyusb pass a
+        # NEGATIVE iso-packet count to libusb_alloc_transfer (it never checks
+        # libusb_get_max_iso_packet_size's return), which abort()s the WHOLE PROCESS — a C
+        # assertion, not a catchable Python exception, so the try/except below can't save it.
+        # Gate every write on the device's usbfs node still existing (bus/address are fixed for
+        # this session). dev=None -> no gate (manual display.py tools, never the daemon).
+        self._devnode = None
+        if dev is not None:
+            try:
+                self._devnode = "/dev/bus/usb/%03d/%03d" % (dev.bus, dev.address)
+            except Exception:
+                self._devnode = None
+        self.device_gone = False
 
     def send(self, frame):
+        if self.device_gone:                        # device removed -> nothing to send (idle)
+            return
         # The device drops any SM frame whose CRC-16 (SM[4:6], offset 956) does not match its
         # payload (firmware FUN_08008efc) — the op parser is never reached. So stamp the session
         # seq, THEN recompute the CRC here, the one place every outgoing frame passes, AFTER any
@@ -122,6 +137,9 @@ class Scheduler:
             time.sleep(deadline - now)              # absolute schedule -> no cumulative drift
         elif now - deadline > 0.5:                  # fell far behind -> resync, don't burst
             self.t0 = now - self.slot * SLOT
+        if self._devnode is not None and not os.path.exists(self._devnode):
+            self.device_gone = True                 # an isoc write on a removed device aborts()
+            return                                  # the whole process (libusb assert) — skip it
         try:
             self.ep.write(frame, timeout=200)
         except usb.core.USBError:
@@ -168,7 +186,7 @@ def main():
 
     dev, ep = open_ep()
     print("device awake: iface%d alt%d ep0x%02x; slot=%.0fms" % (IFACE, ALT, EP, SLOT * 1000))
-    s = Scheduler(ep)
+    s = Scheduler(ep, dev=dev)
 
     for i in range(25):                              # idle prime (~0.5s of real heartbeats)
         s.send(idle[i % len(idle)])

@@ -1180,7 +1180,7 @@ class UI:
         reader = InputReader(dev, dbg)
         reader.start()                       # capture input from t0; events drain after wake
 
-        sched = D.Scheduler(ep)
+        sched = D.Scheduler(ep, dev=dev)     # dev -> isoc-write removal guard (libusb abort fix)
         pulse_ev = PulseEvents(dbg)
         pulse_ev.start()
         devwatch = DeviceWatch(D.VID, D.PID)
@@ -1201,7 +1201,9 @@ class UI:
         last_mon = last
         try:
             while True:
-                if devwatch.gone:            # unplugged -> end the session, drop to tray idle
+                if devwatch.gone or sched.device_gone:   # unplugged -> end session, drop to idle
+                    # sched.device_gone is the FAST path: the isoc-write guard trips on the very
+                    # next slot after removal (before libusb can abort); devwatch is the backup.
                     print("  device removed — stopping audio/input/routing")
                     dbg.log("device removed -> tray idle")
                     break
