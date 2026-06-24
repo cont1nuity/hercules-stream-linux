@@ -13,6 +13,11 @@ it's load-bearing wire-format, update [PROTOCOL.md](PROTOCOL.md) too.
   Fixed the libusb `abort()` this exposed: an isochronous write to a surprise-removed device makes
   pyusb pass a negative iso-packet count to `libusb_alloc_transfer` (SIGABRT, uncatchable) —
   `Scheduler.send` now gates every isoc write on the device's usbfs node still existing.
+- **Config hot-reload** ✅ (hardware-verified 2026-06-24) — editing `config.toml` (by hand or via
+  the config editor) applies live without a restart: `DeviceWatch` flags an mtime change on its
+  1 Hz off-cadence poll, the session bounces, and the daemon re-serves the attached device (brief
+  panel blink). A broken edit (bad TOML, no `[[pages]]`) is rejected and the running config kept.
+  Shipped in v1.2.0.
 - **Tray idle icon** ✅ — greyed/dimmed while idle, normal while serving; daemon publishes
   `idle`/`active` to `$XDG_RUNTIME_DIR/hercules-stream.state`, the tray polls it. The config
   editor's tray on/off toggle was removed (the `tray` key stays in config.toml and is honored).
