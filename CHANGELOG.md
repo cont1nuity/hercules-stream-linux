@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-06-24
+
 ### Added
 - **Config hot-reload** — editing `config.toml` (by hand or via the config editor) now applies
   live without a restart: the daemon watches the file's mtime (on the existing 1 Hz off-cadence
