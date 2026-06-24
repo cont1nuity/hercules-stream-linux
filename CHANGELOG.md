@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Config hot-reload** — editing `config.toml` (by hand or via the config editor) now applies
+  live without a restart: the daemon watches the file's mtime (on the existing 1 Hz off-cadence
+  poll) and, on change, rebuilds the config and bounces the device session (brief panel blink; the
+  process, tray, and lock survive). A broken edit (bad TOML, no `[[pages]]`) is rejected and the
+  running config kept.
+
 ## [1.1.2] - 2026-06-23
 
 ### Added

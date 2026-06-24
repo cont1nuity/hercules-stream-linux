@@ -26,7 +26,23 @@ threads:
 - **PulseEvents** — `pactl subscribe`; kills VU taps bound to removed streams instantly (a dead
   `parec --monitor-stream` tap gets relinked by PipeWire to a sink monitor and would meter
   everything).
-- **DeviceWatch** — 1 Hz usbfs presence poll, off the cadence; flags removal.
+- **DeviceWatch** — 1 Hz usbfs presence poll, off the cadence; flags removal. Also stats
+  `config.toml` and flags a reload when its mtime changes (see below).
+
+## Config hot-reload
+
+Editing `config.toml` (by hand or via the config editor) applies live — no restart. DeviceWatch
+sees the mtime change and flags it; the slot loop breaks, the session tears down, and the
+supervisor calls `_reload_config()` then re-serves the still-attached device without dropping to
+tray-idle. `_reload_config` builds a throwaway `UI` from the new file **first**, so a broken edit
+(bad TOML, no `[[pages]]`) is rejected and the running config is kept — it never kills the daemon.
+On success it copies the config-derived attributes (`_CFG_ATTRS`), clamps the current page into the
+new page list, and re-prerenders.
+
+It's a full rebuild + session bounce: every config key handled by one path (can't get out of sync),
+at the cost of a brief panel blink (USB is released and re-woken, like a `daemonctl restart` — but
+the process, tray, and lock survive). Per-key live fast-paths (e.g. apply brightness/VU colours
+without a bounce) are deliberately not built; the `_reload_config` docstring says when to add one.
 
 ## VU metering
 

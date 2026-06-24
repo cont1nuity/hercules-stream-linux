@@ -680,13 +680,21 @@ class DeviceWatch(threading.Thread):
     """1 Hz USB presence poll, deliberately OFF the cadence: a libusb enumeration is blocking
     work and the 20 ms slot loop must never block. Sets .gone the moment the device disappears
     so the daemon can drop to tray-idle and resume on replug. ponytail: poll, not udev events
-    — 1 Hz is ample for a human pulling a cable; switch to pyudev only if latency ever matters."""
+    — 1 Hz is ample for a human pulling a cable; switch to pyudev only if latency ever matters.
+    Also flags .reload when config.toml's mtime changes (free: we're already polling off-cadence,
+    and os.stat is a cheap syscall, not the blocking USB work the hot loop must avoid)."""
 
-    def __init__(self, vid, pid):
+    def __init__(self, vid, pid, cfgpath=None):
         super().__init__(daemon=True)
         self.vid, self.pid = vid, pid
         self.gone = False
         self.stop = False
+        self.cfgpath = cfgpath
+        self.reload = False
+        try:
+            self._mtime = os.stat(cfgpath).st_mtime if cfgpath else None
+        except OSError:
+            self._mtime = None
 
     def run(self):
         import usbdev
@@ -698,6 +706,14 @@ class DeviceWatch(threading.Thread):
             if gone:
                 self.gone = True
                 return
+            if self.cfgpath:                         # config edited on disk? flag a reload
+                try:
+                    m = os.stat(self.cfgpath).st_mtime
+                    if self._mtime is not None and m != self._mtime:
+                        self.reload = True
+                    self._mtime = m
+                except OSError:                      # file mid-save / gone — try again next tick
+                    pass
             time.sleep(1.0)
 
 
@@ -825,6 +841,43 @@ class UI:
         self.rle_pct = None                  # prerendered "0%".."100%" label RLEs (op36)
         self.vol_until = [0.0] * 4           # lane label shows the pct until this time
         self.vol_shown = [None] * 4          # pct currently on the label (None = config label)
+        self._rend = None                    # Renderer handle (set in run(); reload re-prerenders)
+        self._reload_pending = False         # set when config.toml changed -> bounce the session
+
+    # config-derived attributes the hot-reload copies from a freshly-built UI (everything set
+    # above from `cfg`, MINUS prerender outputs (rebuilt via prerender()) and `tray` (spawned once,
+    # can't toggle live). page_elements/rle_pct are NOT here — prerender() regenerates them.
+    _CFG_ATTRS = ("step", "cps", "verbose", "pages", "brightness", "vu_on", "vu_gain",
+                  "vu_release", "vu_scale", "mute_blink", "passes", "vu_clip", "vu_band",
+                  "vu_band_from", "vu_cap", "vu_bg", "page_colors")
+
+    def _reload_config(self):
+        """Re-read config.toml and rebuild every config-derived attribute, then re-prerender.
+        Build a throwaway UI from the new file FIRST and only commit its attrs if construction
+        succeeds — a broken edit (bad TOML, no [[pages]]) thus leaves the running config intact
+        instead of killing the daemon. The caller has already torn the session down and re-serves,
+        so the worker/meters/lanes pick up the new pages/colors on bringup.
+
+        ponytail: full rebuild + session bounce — every config key handled by one uniform path, so
+        it can't get out of sync, at the cost of a panel blink during the bounce. Per-key live
+        fast-paths (apply brightness / VU colours WITHOUT a bounce) are deliberately NOT built:
+        they'd need a key->derived-state dependency map (e.g. a colour change must re-prerender that
+        page's op35/op36 bytes), which is exactly the partial-update complexity this avoids. Add one
+        only for a specific key if the blink on that tweak actually annoys someone — and keep the
+        structural changes (pages/lanes) on this bounce path regardless."""
+        try:
+            fresh = UI(load_config(self.cfgpath), self.dbg, self.cfgpath)
+        except (SystemExit, Exception) as e:   # SystemExit isn't an Exception; both = bad config
+            print("  config reload skipped — keeping the running config (%s)" % e)
+            self.dbg.log("config reload failed: %r", e)
+            return False
+        for a in self._CFG_ATTRS:
+            setattr(self, a, getattr(fresh, a))
+        self.page = min(self.page, len(self.pages) - 1)   # new config may have fewer pages
+        self.prerender(self._rend)
+        print("config reloaded from %s — re-serving" % self.cfgpath)
+        self.dbg.log("config reloaded (%d pages)", len(self.pages))
+        return True
 
     # ---- frame building ----
 
@@ -1039,6 +1092,7 @@ class UI:
         signal.signal(signal.SIGTERM, _term)
 
         rend = Renderer()
+        self._rend = rend                    # kept so a config reload can re-prerender pages
         print("pre-rendering %d page(s) of elements..." % len(self.pages))
         self.prerender(rend)
         # The tray is the ONLY thing alive during tray-idle; it tracks our (stable) pid across
@@ -1061,6 +1115,10 @@ class UI:
                     # PDEATHSIG'd tray). _serve already tore the session down in its own finally.
                     print("  device session ended on error (%s) — back to tray idle" % e)
                     self.dbg.log("session error -> tray idle: %r", e)
+                if self._reload_pending:             # config changed: rebuild + re-serve, no idle
+                    self._reload_pending = False      # drop (the device is still attached). _serve
+                    self._reload_config()             # already tore the session down; _wait_for_
+                    continue                          # device re-opens it on the next loop.
                 self._write_state("idle")            # tray -> greyed icon
                 print("device removed — idling in the tray (audio/input/routing off); "
                       "replug to resume.")
@@ -1208,8 +1266,8 @@ class UI:
         sched = D.Scheduler(ep, dev=dev)     # dev -> isoc-write removal guard (libusb abort fix)
         pulse_ev = PulseEvents(dbg)
         pulse_ev.start()
-        devwatch = DeviceWatch(D.VID, D.PID)
-        devwatch.start()                     # 1 Hz USB presence poll, OFF the cadence
+        devwatch = DeviceWatch(D.VID, D.PID, self.cfgpath)
+        devwatch.start()                     # 1 Hz USB presence poll + config-mtime watch, OFF cadence
         istate = {"mask": 0, "pos": [None] * 4, "acc": [0] * 4, "cps": self.cps}
         print("wake-lite replay (%d init frames, app elements cut)..." % len(wake))
         for i in range(25):
@@ -1231,6 +1289,11 @@ class UI:
                     # next slot after removal (before libusb can abort); devwatch is the backup.
                     print("  device removed — stopping audio/input/routing")
                     dbg.log("device removed -> tray idle")
+                    break
+                if devwatch.reload:          # config.toml edited -> bounce the session (panel blinks)
+                    print("  config changed on disk — reloading (panel blinks briefly)")
+                    dbg.log("config change -> reload")
+                    self._reload_pending = True
                     break
                 now = time.monotonic()
                 if now - last > STALL_S:     # cadence broke -> panel has blanked; re-light it
@@ -1413,8 +1476,39 @@ def selftest(cfg):
                 for _, op, _ in op_walk.walk(op_walk.sm_ops(u)))
     print("  wake-lite: %d frames, element-free=%s" % (len(wl), no_el))
     ok = ok and no_el
+
+    # hot-reload safety: a broken edit must keep the running config (no crash / no lost pages),
+    # and a successful reload must clamp the current page into a possibly-shorter new page list.
+    import tempfile
+    ui._rend = rend if mode == "real assets" else None
+    n_pages = len(ui.pages)
+    bad = os.path.join(tempfile.gettempdir(), "hercules-reload-bad.toml")
+    with open(bad, "w") as f:
+        f.write("this is = not valid toml [[[")
+    ui.cfgpath = bad
+    assert ui._reload_config() is False, "bad config must be rejected"
+    assert len(ui.pages) == n_pages, "rejected reload must keep the old pages"
+    clamp = "bad-path only"
+    example = os.path.join(ROOT, "config.example.toml")
+    if mode == "real assets" and os.path.exists(example):
+        ui.page = 999                        # force out-of-range vs whatever example defines
+        ui.cfgpath = example
+        assert ui._reload_config() is True, "valid reload must succeed"
+        assert 0 <= ui.page < len(ui.pages), "reload must clamp page into range"
+        clamp = "page clamped"
+    print("  hot-reload: bad-config rejected, %s" % clamp)
+
     print("ui selftest:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
+
+
+def load_config(cfgpath):
+    """Parse config.toml and apply build-time overrides. Raises on bad/missing TOML — callers
+    decide what that means: main() exits at startup, the hot-reload keeps the running config."""
+    import features                            # internal build overrides win over config.toml
+    with open(cfgpath, "rb") as f:
+        cfg = S.toml.load(f)
+    return features.apply_overrides(cfg)
 
 
 def main():
@@ -1451,10 +1545,7 @@ def main():
                      % (cfgpath, os.path.join(ROOT, "config.example.toml")))
     if S.toml is None:
         sys.exit("No TOML parser (need Python 3.11+ or `pip install tomli`).")
-    with open(cfgpath, "rb") as f:
-        cfg = S.toml.load(f)
-    import features                           # internal build overrides win over config.toml
-    cfg = features.apply_overrides(cfg)       # ...and feed the merged config everywhere below
+    cfg = load_config(cfgpath)                # parse + apply build overrides (shared with reload)
     cv = int(cfg.get("config_version", 1))    # absent = v1; additive keys need no migration
     if cv > CONFIG_VERSION:
         print("note: config_version %d is newer than this build understands (%d) — "
