@@ -57,6 +57,11 @@ class Meter:
         else:                                    # release (smoothing factor per call)
             self.env = self.env * self.release + pk * (1.0 - self.release)
         return self.env
+    def dead(self):
+        """True once the parec child has exited — its device went invalid/away (e.g. a mic
+        source unresolved mid-reconfig). A dead tap reads EOF -> peak()==0 forever; the daemon
+        drops the binding so the next sync respawns it. Cheap (waitpid WNOHANG), never blocks."""
+        return self.proc.poll() is not None
     def close(self):
         try:
             self.proc.terminate()
@@ -82,3 +87,14 @@ def to_byte(env, gain):
     db = 20.0 * math.log10(e)                 # -inf..0
     f = max(0.0, (db + FLOOR_DB) / FLOOR_DB)  # -FLOOR_DB..0 dB -> 0..1
     return max(0, min(LMAX, int(f * LMAX)))
+
+
+if __name__ == "__main__":
+    # self-check for dead(): liveness must flip the moment the child exits, so the daemon
+    # can drop+respawn a tap on a vanished device. Hermetic — uses /bin/sleep, not parec.
+    m = Meter.__new__(Meter)                       # bypass the parec spawn
+    m.proc = subprocess.Popen(["sleep", "0.3"])
+    assert not m.dead(), "fresh child must read alive"
+    m.proc.wait()
+    assert m.dead(), "exited child must read dead"
+    print("bars_live self-check OK: dead() tracks child liveness")

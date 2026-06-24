@@ -44,6 +44,10 @@ it's load-bearing wire-format, update [PROTOCOL.md](PROTOCOL.md) too.
   pickers, add/remove pages, comment-preserving TOML save, and **Apply & Restart**
   (`src/daemonctl.py`). The on-panel live restart (brief blank → repaint) is hardware-confirmed
   (2026-06-17). Bundled into the AppImage (Tcl/Tk via AppRun).
+- **VU tap self-heal: dead `parec` respawned** ✅ (hardware-verified 2026-06-25) — the 2 s re-sync
+  checks each meter's liveness (`Meter.dead()`) and drops a dead tap so it gets respawned; fixes a
+  device lane (mic / master, whose binding key never changes) going permanently flat after its tap
+  died on a momentarily-unresolved source (seen with a virtual-audio-cable reconfig).
 - **VU bar colors: config-driven** ✅ (hardware-verified 2026-06-12) — per-lane body color or
   gradient (page `colors`, up to 16 stops), plus an absolute warning band and clip/cap/background
   colors (`[ui]` keys `vu_clip_color` / `vu_band_color` / `vu_band_from` / `vu_cap_color` /

@@ -11,6 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-06-25
+
+### Fixed
+- **VU meter could go permanently flat for a lane** — meters are `parec` taps that are only
+  respawned when a lane's binding *key* changes. App lanes self-heal because their sink-input
+  index churns, but a device lane (mic → `@DEFAULT_SOURCE@`, master → `@DEFAULT_MONITOR@`) has a
+  key that never changes, so if its tap ever died — e.g. the source was momentarily unresolved
+  when the tap was spawned (observed with a virtual-audio-cable reconfiguring the default
+  source) — it was never detected, reaped, or respawned and read silence forever. The 2 s
+  re-sync now checks each tap's liveness (`Meter.dead()`) and drops a dead binding so it gets
+  respawned; this also reaps the orphaned `parec` and recovers any stale app tap.
+
 ## [1.2.0] - 2026-06-24
 
 ### Added

@@ -1002,6 +1002,17 @@ class UI:
                         self._apply_lane(k, pct, muted)
             elif res[0] == "sync" and res[1] == self.page:
                 for k, st in enumerate(res[2]):
+                    # a tap whose parec died (its device went invalid/suspended at spawn —
+                    # e.g. the mic source mid-VAC-reconfig) keeps a live binding key but reads
+                    # silence forever. App lanes self-heal because their sink-input index
+                    # churns; a device key (mic/master) NEVER changes, so rebind_meter would
+                    # early-return on it forever. Drop the dead binding here so the rebind
+                    # below respawns it; reap off-cadence via the worker.
+                    if self.meters[k] and any(m.dead() for m in self.meters[k]):
+                        self.dbg.log("METER lane%d tap died -> drop+rebind", k)
+                        self.worker.q.put(("close", self.meters[k]))
+                        self.meters[k] = self.meter_key[k] = self.meter_pending[k] = None
+                        self.peaks[k] = 0
                     self.rebind_meter(k, self.desired_meter_key(k, st))
                     if now - self.last_touch[k] > TOUCH_GUARD_S:
                         self._apply_lane(k, st["pct"], st["muted"])
