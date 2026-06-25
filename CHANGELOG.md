@@ -11,6 +11,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **VU bar could stick on the wrong source (or go flat) after a lane lost its match** —
+  `rebind_meter` failed to release a lane's meter when its target became `None` (a dedup guard
+  matched `None == meter_pending`), so the lane kept its previous tap — usually the default-sink
+  monitor (the master mix on the wrong bar) or a now-dead stream. Latent since the first release;
+  surfaced under heavy lane churn (e.g. a virtual-audio-cable moving streams, or page switching).
+
+### Changed
+- **Metering re-sync is event-driven instead of a fixed 2 s `pactl` poll.** Per-lane OS reads are
+  batched into one snapshot per sync; the re-sync is driven by `pactl subscribe` (the periodic poll
+  is demoted to a 15 s safety net); and the subscribe handler reacts only to sink-input/source and
+  default sink/source changes — it **ignores client/link churn**, so the daemon can't be amplified
+  into hammering `pactl` when another tool floods the graph with short-lived clients. The daemon now
+  spawns ~no `pactl` while idle. (Hardens against a host-side WirePlumber per-client resource leak.)
+
 ## [1.2.2] - 2026-06-25
 
 ### Fixed
