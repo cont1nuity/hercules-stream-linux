@@ -40,19 +40,6 @@ FIXED = {0x10: 23, 0x11: 1, 0x12: 4, 0x13: 4, 0x14: 0, 0x15: 0, 0x16: 0, 0x17: 0
 ROWS = {0x35: (32, 32), 0x36: (16, 110)}     # rows, width
 
 
-def rle_skip(ops, i, nrows, width):
-    """Advance past RLE pixel data exactly like the firmware: count rows, stop after nrows."""
-    row = 0; col = 0
-    while row < nrows and i < len(ops):
-        t = ops[i]; i += 1
-        if t & 0x0f:
-            i += 2
-        col = width if (t & 0xf0) == 0 else col + (t >> 4)
-        if col >= width:
-            row += 1; col = 0
-    return i
-
-
 def walk(ops):
     """Yield (offset, op, payload_bytes) records; raise ValueError on unknown op."""
     i = 0
@@ -77,9 +64,17 @@ def walk(ops):
         elif op == 0x34:
             n = 8 + ops[i + 7] * 2
         elif op in ROWS:
+            # advance past the RLE pixel data exactly like the firmware: count rows, stop after nrows
             nrows, width = ROWS[op]
-            end = rle_skip(ops, i + 4, nrows, width)
-            n = end - i
+            j = i + 4; row = col = 0
+            while row < nrows and j < len(ops):
+                t = ops[j]; j += 1
+                if t & 0x0f:
+                    j += 2
+                col = width if (t & 0xf0) == 0 else col + (t >> 4)
+                if col >= width:
+                    row += 1; col = 0
+            n = j - i
         elif op == 0x37:
             n = 8 + 4080
         elif op == 0x40:

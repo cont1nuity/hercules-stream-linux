@@ -104,10 +104,6 @@ def cmd_info(_args):
 
 # --------------------------------------------------------------------------- probe (RE)
 
-def _hex(buf):
-    return " ".join(f"{b:02x}" for b in buf)
-
-
 def cmd_probe(args):
     dev = open_device()
     print("Probe mode. Turn each encoder both ways, press encoders, press the 4 action")
@@ -125,7 +121,7 @@ def cmd_probe(args):
             buf = bytes(data)
             if args.all or prev is None or buf != prev:
                 ts = time.strftime("%H:%M:%S")
-                line = _hex(buf)
+                line = " ".join(f"{b:02x}" for b in buf)
                 if prev is not None and not args.all:
                     diff = ", ".join(
                         f"[{i}] {prev[i]:02x}->{buf[i]:02x}"
