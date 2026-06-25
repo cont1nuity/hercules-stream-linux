@@ -212,10 +212,12 @@ MATCH_ALIASES = {
 }
 
 
-def match_inputs(needle):
+def match_inputs(needle, items=None):
     """Substring match. `needle` may give ALTERNATIVES separated by '|' (e.g.
     "firefox|waterfox") and/or generic ALIASES ("browser", "game" — see MATCH_ALIASES).
-    Plain needles match app/binary/media; alias expansions match app/binary only."""
+    Plain needles match app/binary/media; alias expansions match app/binary only.
+    `items` = a pre-fetched sink_inputs() list (caller batches one read for all lanes); when
+    None, fetch our own (a single-lane caller)."""
     full, appbin = [], []
     for part in needle.split("|"):
         p = part.strip().lower()
@@ -226,7 +228,7 @@ def match_inputs(needle):
         else:
             full.append(p)
     out = []
-    for si in sink_inputs():
+    for si in (items if items is not None else sink_inputs()):
         a, b, m = si["app"].lower(), si["binary"].lower(), si["media"].lower()
         if (any(n in a or n in b or n in m for n in full)
                 or any(n in a or n in b for n in appbin)):
@@ -277,10 +279,11 @@ def sources():
     return items
 
 
-def match_sources(needle):
-    """Substring match against source name/description; '|' separates alternatives."""
+def match_sources(needle, items=None):
+    """Substring match against source name/description; '|' separates alternatives.
+    `items` = a pre-fetched sources() list (caller batches one read); None -> fetch our own."""
     ns = [n.strip().lower() for n in needle.split("|") if n.strip()]
-    return [s for s in sources() if not s["monitor"]
+    return [s for s in (items if items is not None else sources()) if not s["monitor"]
             and any(n in s["name"].lower() or n in s["desc"].lower() for n in ns)]
 
 

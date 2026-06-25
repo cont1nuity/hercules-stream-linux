@@ -160,7 +160,11 @@ VU_LMAX = 0x73                   # captured op40 levels span 0x00..0x73
 VU_HOLD_S = 0.7                  # cap holds at the peak this long before falling
 VU_FALL = 160.0                  # then falls at this many level-bytes per second
 STALL_S = 0.5                    # loop gap that means the panel has likely blanked
-SYNC_S = 2.0                     # periodic OS-state re-sync of the current page
+SYNC_S = 15.0                    # periodic OS-state re-sync — now a slow SAFETY NET only: real
+#                                  changes arrive as pactl-subscribe events (PulseEvents), so we no
+#                                  longer poll pactl every 2 s when nothing changed (idle = no churn)
+DIRTY_SYNC_S = 1.0               # min gap between event-driven re-syncs — caps how fast a pactl
+#                                  event storm can make us shell pactl (each sync = 1 batched read)
 TOUCH_GUARD_S = 0.4              # ignore readbacks for a lane this soon after a local detent
 VOL_LABEL_S = 1.0                # while turning, the lane label shows "NN%"; revert after this
 
@@ -395,30 +399,54 @@ def _first_pct(text):
     return None
 
 
-def lane_state(match):
+def audio_snapshot():
+    """One batched read of everything a periodic sync needs, so the sync shells a FIXED handful
+    of pactl instead of several PER LANE. Each pactl is a short-lived PipeWire client, and a high
+    client-spawn rate drives session-manager (wireplumber) weak-ref churn — keeping the count
+    flat keeps the daemon from being a churn source. The set->read-back user paths deliberately
+    do NOT use this — they must read the fresh post-write value."""
+    return {
+        "sink_inputs": S.sink_inputs(),
+        "sources": S.sources(),
+        "sink_pct": _first_pct(S._pactl("get-sink-volume", "@DEFAULT_SINK@")),
+        "sink_mute": S._pactl("get-sink-mute", "@DEFAULT_SINK@").strip().endswith("yes"),
+        "src_pct": _first_pct(S._pactl("get-source-volume", "@DEFAULT_SOURCE@")),
+        "src_mute": S._pactl("get-source-mute", "@DEFAULT_SOURCE@").strip().endswith("yes"),
+    }
+
+
+def lane_state(match, snap=None):
     """Read a lane's CURRENT volume/mute from PipeWire (read-only). Raw pct (can be >100).
     VU binding hints: "si" = tuple of ALL matched sink-input indices (apps like browsers run
     one stream per tab/media — volume fans out to all, so the VU meters all of them too);
-    "dev" = parec device (default sink's monitor / a capture source for mic lanes)."""
+    "dev" = parec device (default sink's monitor / a capture source for mic lanes).
+    `snap` = an audio_snapshot() to read from (the periodic sync passes one batched read for all
+    lanes); None -> read live (one-time init, or a single user read-back)."""
     none = {"pct": 0, "muted": False, "si": None, "dev": None}
     mic = S.mic_match(match) if match else None
     if mic is not None:
         if mic == "":
-            pct = _first_pct(S._pactl("get-source-volume", "@DEFAULT_SOURCE@"))
-            muted = S._pactl("get-source-mute", "@DEFAULT_SOURCE@").strip().endswith("yes")
+            if snap is not None:
+                pct, muted = snap["src_pct"], snap["src_mute"]
+            else:
+                pct = _first_pct(S._pactl("get-source-volume", "@DEFAULT_SOURCE@"))
+                muted = S._pactl("get-source-mute", "@DEFAULT_SOURCE@").strip().endswith("yes")
             return {"pct": pct if pct is not None else 50, "muted": muted,
                     "si": None, "dev": "@DEFAULT_SOURCE@"}
-        hits = S.match_sources(mic)
+        hits = S.match_sources(mic, snap["sources"] if snap is not None else None)
         if hits:
             return {"pct": hits[0]["vol"] if hits[0]["vol"] is not None else 50,
                     "muted": hits[0]["mute"], "si": None, "dev": hits[0]["name"]}
         return none
     if match in ("default", "master"):
-        pct = _first_pct(S._pactl("get-sink-volume", "@DEFAULT_SINK@"))
-        muted = S._pactl("get-sink-mute", "@DEFAULT_SINK@").strip().endswith("yes")
+        if snap is not None:
+            pct, muted = snap["sink_pct"], snap["sink_mute"]
+        else:
+            pct = _first_pct(S._pactl("get-sink-volume", "@DEFAULT_SINK@"))
+            muted = S._pactl("get-sink-mute", "@DEFAULT_SINK@").strip().endswith("yes")
         return {"pct": pct if pct is not None else 50, "muted": muted,
                 "si": None, "dev": "@DEFAULT_MONITOR@"}
-    hits = S.match_inputs(match) if match else []
+    hits = S.match_inputs(match, snap["sink_inputs"] if snap is not None else None) if match else []
     if hits:
         # meter only streams that are actually PLAYING (corked = paused = silent), and at
         # most 4 — a browser holds one stream per tab, no point tapping paused ones
@@ -566,7 +594,8 @@ class AudioWorker(threading.Thread):
             S.do_button(item[1], self.verbose, 1, 0)   # non-page actions only
         elif kind == "sync":
             _, page_idx, matches = item
-            self.results.put(("sync", page_idx, [lane_state(m) for m in matches]))
+            snap = audio_snapshot()                       # one batched read for ALL lanes
+            self.results.put(("sync", page_idx, [lane_state(m, snap) for m in matches]))
         elif kind == "meter":
             _, k, key = item
             self.results.put(("meter", k, key,
@@ -594,19 +623,29 @@ class PulseEvents(threading.Thread):
                                      stderr=subprocess.DEVNULL, text=True,
                                      preexec_fn=__import__("bars_live")._die_with_parent)
 
+    @staticmethod
+    def _interesting(line):
+        """True if a `pactl subscribe` line is a change we must re-sync for: a sink-input or
+        source lifecycle event, or a default-sink/source value change ('change' on sink/server).
+        Deliberately IGNORES client/module/card and source-output events — so a flood of
+        short-lived clients (e.g. another tool spawning pactl/pw-link) can NOT make us re-sync.
+        This lets the periodic poll be a slow safety net instead of a 2 s pactl timer."""
+        if "source-output" in line:
+            return False
+        verb = "'new'" in line or "'remove'" in line or "'change'" in line
+        if "sink-input" in line or "source" in line:
+            return verb
+        return "'change'" in line and ("sink #" in line or "on server" in line)
+
     def run(self):
         for line in self.proc.stdout:        # ends when pactl dies / we get killed
-            if "sink-input" in line:
-                if "'new'" in line or "'remove'" in line or "'change'" in line:
-                    self.dirty = True
-                if "'remove'" in line:       # a dead stream = its tap is now RELINKED — the
-                    try:                     # index lets the main loop kill that tap at once
-                        self.removed.append(int(line.rsplit("#", 1)[1]))
+            if self._interesting(line):
+                self.dirty = True
+                if "sink-input" in line and "'remove'" in line:
+                    try:                     # a dead stream = its tap is now RELINKED; the index
+                        self.removed.append(int(line.rsplit("#", 1)[1]))  # lets us kill it at once
                     except ValueError:
                         pass
-            elif "source" in line and "source-output" not in line:
-                if "'new'" in line or "'remove'" in line or "'change'" in line:
-                    self.dirty = True
         self.dbg.log("PULSE-EV subscribe stream ended")
 
     def take_removed(self):
@@ -1359,7 +1398,7 @@ class UI:
                 # re-sync: event-driven (stream born/died/changed -> within ~0.3 s; keeps a
                 # relinked dead tap from showing another app's audio) + 2 s periodic fallback
                 want_sync = (now - self.last_sync > SYNC_S
-                             or (pulse_ev.dirty and now - self.last_sync > 0.3))
+                             or (pulse_ev.dirty and now - self.last_sync > DIRTY_SYNC_S))
                 if want_sync and self.worker.q.empty():
                     pulse_ev.dirty = False
                     self.worker.q.put(("sync", self.page, self.lane_matches()))
@@ -1533,6 +1572,40 @@ def selftest(cfg):
     ui.rebind_meter(2, None)                     # already-empty lane must stay a no-op (no churn)
     assert not ui.worker.q.items, "empty lane should be a no-op"
     print("  rebind_meter: drops stale meter on desired=None, no-ops an empty lane")
+
+    # hardening: a snapshot-backed sync must NOT shell pactl (the per-lane reads are batched into
+    # one audio_snapshot()). Each pactl is a PipeWire client; per-sync shelling drove session-mgr
+    # churn. Verify lane_state(snap) reads the snapshot and spawns nothing.
+    _real_pactl = S._pactl
+    calls = []
+    S._pactl = lambda *a: (calls.append(a), "")[1]
+    try:
+        snap = {"sink_inputs": [{"index": 7, "app": "spotify", "binary": "", "media": "",
+                                 "mute": False, "vol": 33, "corked": False, "client": None}],
+                "sources": [], "sink_pct": 60, "sink_mute": False, "src_pct": 40, "src_mute": True}
+        assert lane_state("master", snap) == {"pct": 60, "muted": False, "si": None,
+                                              "dev": "@DEFAULT_MONITOR@"}, lane_state("master", snap)
+        assert lane_state("mic", snap) == {"pct": 40, "muted": True, "si": None,
+                                           "dev": "@DEFAULT_SOURCE@"}, lane_state("mic", snap)
+        assert lane_state("spotify", snap)["si"] == (7,), lane_state("spotify", snap)
+        assert not calls, "snapshot-backed lane_state shelled pactl: %r" % (calls,)
+    finally:
+        S._pactl = _real_pactl
+    print("  hardening: snapshot-backed sync shells 0 pactl (was several per lane)")
+
+    # the pactl-subscribe classifier must re-sync on real audio changes but IGNORE client/link
+    # churn — else another tool spawning pactl/pw-link could make us re-sync (and shell pactl) in a
+    # feedback storm. (sink-input/source lifecycle + default sink/server value changes only.)
+    I = PulseEvents._interesting
+    for ln in ["Event 'change' on sink-input #5", "Event 'remove' on sink-input #5",
+               "Event 'change' on source #62", "Event 'change' on sink #98",
+               "Event 'change' on server #0"]:
+        assert I(ln), "should re-sync on: %s" % ln
+    for ln in ["Event 'new' on client #5", "Event 'remove' on client #9",
+               "Event 'change' on source-output #3", "Event 'new' on module #7",
+               "Event 'change' on card #1"]:
+        assert not I(ln), "must NOT re-sync on: %s" % ln
+    print("  hardening: subscribe classifier ignores client/link churn, catches sink/server")
 
     print("ui selftest:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
