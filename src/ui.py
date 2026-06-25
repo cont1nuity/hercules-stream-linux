@@ -957,7 +957,12 @@ class UI:
 
     def rebind_meter(self, k, key):
         """Request/drop lane k's meter when its binding changed (spawn happens in the worker)."""
-        if key == self.meter_key[k] or key == self.meter_pending[k]:
+        # Skip only if the desired key is already installed, or already being spawned. The
+        # pending check must guard against meter_pending[k] being None: otherwise a desired
+        # key of None matches "nothing pending" and short-circuits the drop below, stranding a
+        # stale tap (a lane that lost its match kept metering @DEFAULT_MONITOR@ — wrong audio).
+        if key == self.meter_key[k] or (self.meter_pending[k] is not None
+                                        and key == self.meter_pending[k]):
             return
         if key is None:
             if self.meters[k]:
@@ -1508,6 +1513,26 @@ def selftest(cfg):
         assert 0 <= ui.page < len(ui.pages), "reload must clamp page into range"
         clamp = "page clamped"
     print("  hot-reload: bad-config rejected, %s" % clamp)
+
+    # rebind_meter must DROP a stale meter when the desired key becomes None — the lane lost
+    # its match (e.g. a page switch off a 'default'/'master' lane onto an app lane with no live
+    # stream). Regression: the dedup guard matched key==None==meter_pending and skipped the
+    # drop, so the lane kept its old @DEFAULT_MONITOR@ tap forever and metered the wrong audio
+    # (seen live: a 'game' lane stuck on the master monitor). A VAC churns lanes to "no match"
+    # often, which is why it surfaced there.
+    ui.dbg = type("D", (), {"log": lambda *a, **k: None})()
+    ui.worker = type("W", (), {"q": type("Q", (), {"items": [],
+                  "put": lambda s, x: s.items.append(x)})()})()
+    ui.meters = [None] * 4; ui.meter_key = [None] * 4
+    ui.meter_pending = [None] * 4; ui.peaks = [0] * 4
+    ui.meters[3] = ["stale-tap"]; ui.meter_key[3] = ("dev", "@DEFAULT_MONITOR@")
+    ui.rebind_meter(3, None)
+    assert ui.meter_key[3] is None, "stale meter not dropped (key=%r)" % (ui.meter_key[3],)
+    assert any(it[0] == "close" for it in ui.worker.q.items), "stale tap not closed"
+    ui.worker.q.items.clear()
+    ui.rebind_meter(2, None)                     # already-empty lane must stay a no-op (no churn)
+    assert not ui.worker.q.items, "empty lane should be a no-op"
+    print("  rebind_meter: drops stale meter on desired=None, no-ops an empty lane")
 
     print("ui selftest:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
