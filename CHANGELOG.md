@@ -11,6 +11,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-06-25
+
+### Fixed
+- **Startup update check could miss a release** — the check fired exactly once at tray boot and
+  silently swallowed any failure, so if the network wasn't ready at that instant (login/resume race)
+  the notification never appeared for the life of the daemon (days, for the hotplug daemon). It now
+  waits a short settle delay, retries on failure (logging the reason to `tray.err` instead of
+  vanishing), and re-checks periodically so a release published while the daemon idles still
+  surfaces — each newer version announced once per session.
+
+### Changed
+- **README** now documents that one-click *in-place* updates require
+  [AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate) on `PATH` (otherwise the
+  tray/notification just open the Releases page to download manually), how to install it, and why
+  it isn't bundled.
+
 ## [1.2.1] - 2026-06-25
 
 ### Fixed
