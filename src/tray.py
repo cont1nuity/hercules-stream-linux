@@ -620,17 +620,32 @@ VERSION = "dev"
 
 
 async def _check_for_update(menu):
-    """One startup check, off the dbus loop: if the latest GitHub release is newer than the running
-    version, relabel the tray item and fire a desktop notification. Best-effort — network/SSL
-    failures just no-op (the manual 'Check for updates…' item still works)."""
-    try:
-        latest = await asyncio.to_thread(latest_release_version)
-    except Exception:
-        return
-    cur, new = _ver_tuple(VERSION), _ver_tuple(latest)
-    if new and cur and new > cur:
-        menu.set_update_available(latest)
-        notify(APP_NAME, "Update available: %s — open the tray to install" % latest)
+    """Best-effort update check, off the dbus loop. Waits a short settle delay (network/DNS/session
+    bus come up at login), then polls: if the latest GitHub release is newer than the running
+    version, relabel the tray item + announce it once. Keeps re-checking, so an even newer release
+    published while the daemon idles for days announces again (once each). A one-shot boot check used
+    to lose a network-not-ready-at-login race *silently*; this retries on failure. Failures log to
+    stderr (tray.err) instead of vanishing."""
+    notified = None                             # newest version already announced this boot (each once)
+    delay = 20                                  # settle: let network/DNS/session bus come up after login
+    while not menu.quit_ev.is_set():
+        try:
+            await asyncio.wait_for(menu.quit_ev.wait(), delay)
+            return                              # quitting
+        except asyncio.TimeoutError:
+            pass
+        try:
+            latest = await asyncio.to_thread(latest_release_version)
+            cur, new = _ver_tuple(VERSION), _ver_tuple(latest)
+            if new and cur and new > cur:
+                menu.set_update_available(latest)
+                if latest != notified:          # first sighting of this release (or an even newer one)
+                    notify(APP_NAME, "Update available: %s — open the tray to install" % latest)
+                    notified = latest           # ...announce once; keep polling for a newer one
+            delay = 6 * 3600                    # re-check in 6 h (catches a newer release mid-session)
+        except Exception as e:
+            print("update-check failed (will retry): %r" % e, file=sys.stderr, flush=True)
+            delay = 60                          # transient (network not up yet) -> retry in 1 min
 
 
 async def amain(daemon_pid, cfgpath, icon, state_file):

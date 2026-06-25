@@ -53,6 +53,24 @@ native polkit prompt; replug the device afterwards when asked).
 Config lives at `~/.config/hercules-stream/config.toml`, logs at
 `~/.local/state/hercules-stream/`.
 
+### Updates
+
+The tray checks GitHub on startup (and periodically) and notifies you when a newer release
+is out — toggle it via the tray's *Check for updates automatically* item or `[ui] check_updates`
+in the config. The notification and the *Check for updates…* tray item then do an **in-place
+delta update** *only if* [AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate)
+is installed; otherwise they just open the Releases page so you can download the new AppImage
+manually. (The AppImage carries the embedded update-information AppImageUpdate needs — no
+extra config.)
+
+To get one-click updates, put AppImageUpdate on your `PATH` as `appimageupdatetool` or
+`AppImageUpdate` — download `appimageupdatetool-x86_64.AppImage` from its
+[releases](https://github.com/AppImageCommunity/AppImageUpdate/releases) (`chmod +x`, drop it
+in `~/.local/bin/appimageupdatetool`), or install your distro's package (Arch AUR:
+`appimageupdate`). It is **not bundled**: it would add weight and a vendored binary to keep
+current, and the manual-download fallback already works — install it once if you want hands-off
+updates.
+
 ### From source
 
 Python 3.9+ (3.11+ uses the stdlib `tomllib`; on older it auto-installs `tomli`), `libusb-1.0`,
