@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
      "## [X.Y.Z] - YYYY-MM-DD" and tag vX.Y.Z. The release workflow pulls that section
      into the GitHub release notes automatically (packaging/changelog-section.sh). -->
 
-## [Unreleased]
+## [1.2.3] - 2026-06-25
 
 ### Fixed
 - **VU bar could stick on the wrong source (or go flat) after a lane lost its match** —
@@ -21,10 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **Metering re-sync is event-driven instead of a fixed 2 s `pactl` poll.** Per-lane OS reads are
   batched into one snapshot per sync; the re-sync is driven by `pactl subscribe` (the periodic poll
-  is demoted to a 15 s safety net); and the subscribe handler reacts only to sink-input/source and
-  default sink/source changes — it **ignores client/link churn**, so the daemon can't be amplified
-  into hammering `pactl` when another tool floods the graph with short-lived clients. The daemon now
-  spawns ~no `pactl` while idle. (Hardens against a host-side WirePlumber per-client resource leak.)
+  is demoted to a 60 s safety net), and event-driven re-syncs are throttled to ≤1 per 3 s so a stream
+  start/stop storm coalesces instead of spawning a snapshot apiece. The subscribe handler reacts only
+  to sink-input/source and default sink/source changes — it **ignores client/link churn**, so the
+  daemon can't be amplified into hammering `pactl` when another tool floods the graph with short-lived
+  clients; it now drips ~0.07 `pactl`/s while idle (one snapshot per safety-net tick).
+  (Hardens against a host-side WirePlumber per-client resource leak.)
 
 ## [1.2.2] - 2026-06-25
 

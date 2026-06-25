@@ -160,11 +160,15 @@ VU_LMAX = 0x73                   # captured op40 levels span 0x00..0x73
 VU_HOLD_S = 0.7                  # cap holds at the peak this long before falling
 VU_FALL = 160.0                  # then falls at this many level-bytes per second
 STALL_S = 0.5                    # loop gap that means the panel has likely blanked
-SYNC_S = 15.0                    # periodic OS-state re-sync — now a slow SAFETY NET only: real
-#                                  changes arrive as pactl-subscribe events (PulseEvents), so we no
-#                                  longer poll pactl every 2 s when nothing changed (idle = no churn)
-DIRTY_SYNC_S = 1.0               # min gap between event-driven re-syncs — caps how fast a pactl
-#                                  event storm can make us shell pactl (each sync = 1 batched read)
+SYNC_S = 60.0                    # periodic OS-state re-sync — a slow SAFETY NET only: real changes
+#                                  arrive as pactl-subscribe events (PulseEvents). At 60 s the idle
+#                                  snapshot drip is ~0.07 pactl/s (was ~0.4/s at 15 s); a missed event
+#                                  only delays an EXTERNAL change by ≤60 s (local knob turns are instant)
+DIRTY_SYNC_S = 3.0               # min gap between event-driven re-syncs — a leading-edge THROTTLE, not
+#                                  a debounce: an isolated change still syncs within a slot; a start/stop
+#                                  storm coalesces to ≤1 batched read / 3 s. Safe to widen because a dead
+#                                  stream's tap is killed immediately by the relink-guard (~20 ms slot,
+#                                  ungated by this), so VU never misattributes during the gap
 TOUCH_GUARD_S = 0.4              # ignore readbacks for a lane this soon after a local detent
 VOL_LABEL_S = 1.0                # while turning, the lane label shows "NN%"; revert after this
 
