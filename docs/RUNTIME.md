@@ -32,8 +32,10 @@ transport pointing at this repo's `latest` release — and appimagetool writes a
 to the AppImage, so `AppImageUpdate` / `appimageupdatetool` can delta-update an installed AppImage
 in place. The release workflow installs `zsync` (for `zsyncmake`) and uploads the `.zsync` asset
 beside the AppImage; a local build without `zsync` still embeds the update-info but skips the
-`.zsync`. The tray's **Check for updates…** item (AppImage runs only) drives the install — see the
-tray section below.
+`.zsync`. The tray's **Check for updates…** item (AppImage runs only) drives the install: via
+`AppImageUpdate`'s zsync delta if that tool is installed, else by a pure-Python full-asset download
++ atomic swap (the embedded update-info and `.zsync` are only used by the AppImageUpdate path). See
+the tray section below.
 
 On tray startup (AppImage runs only, honoring `[ui] check_updates`, default on) a lightweight check
 runs off the dbus loop: a `HEAD` on `…/releases/latest` follows the 302 to `…/tag/vX.Y.Z`, so it
@@ -110,8 +112,10 @@ login** checkbox (XDG autostart entry `~/.config/autostart/hercules-stream.deskt
 rewritten each start so Exec tracks AppImage vs `start.sh`; opt-out remembered via a marker in
 the XDG state dir), a **Check for updates automatically** checkmark and a **Check for updates…**
 item (both AppImage runs only — the checkmark toggles `[ui] check_updates`; the item hands off to
-`appimageupdatetool` / `AppImageUpdate` if installed, else opens the Releases page; see "Auto-update"
-above), **Restart** (relaunch the daemon to apply config edits — spawns a detached
+`appimageupdatetool` / `AppImageUpdate` if installed, else self-updates in pure Python by
+downloading the latest `*.AppImage` and atomically swapping `$APPIMAGE` (`download_latest_appimage`,
+off the dbus loop in a worker thread; applies on next launch, no auto-restart), falling back to the
+Releases page on any failure; see "Auto-update" above), **Restart** (relaunch the daemon to apply config edits — spawns a detached
 relauncher that waits for the current daemon to exit and release the single-instance flock, then
 execs `launch_cmd()`, since `single_instance()` takes the flock non-blocking), and Quit
 (SIGTERM → clean shutdown). Tray stderr lands in `<logs>/tray.err`. While the daemon is **idle**

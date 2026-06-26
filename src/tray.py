@@ -11,12 +11,14 @@ Left click  -> open the graphical config editor (configui.py; falls back to the 
 Right click -> menu: version, Configure… / Edit config file, 'Start at login' checkbox
 (an XDG autostart entry, see autostart_* below; DEFAULT ON — created on first tray run
 unless the user has unchecked it before), 'Check for updates…' (AppImage runs only — hands off
-to AppImageUpdate if present, else opens the Releases page), Restart (relaunch the daemon, e.g.
+to AppImageUpdate if present, else self-updates in place by downloading + swapping the AppImage,
+falling back to the Releases page), Restart (relaunch the daemon, e.g.
 to apply config edits), Quit (SIGTERM to the daemon).
 
 Usage (by ui.py): tray.py --pid <daemon> --config <path> --version <v> --icon <png/svg>
 """
 import asyncio
+import json
 import os
 import re
 import shutil
@@ -24,6 +26,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -32,6 +35,7 @@ from paths import ROOT, XDG_CONFIG, XDG_STATE, LOGS
 APP_ID = "hercules-stream"
 APP_NAME = "Hercules Stream"
 RELEASES_URL = "https://github.com/cont1nuity/hercules-stream-linux/releases/latest"
+GH_API_LATEST = "https://api.github.com/repos/cont1nuity/hercules-stream-linux/releases/latest"
 ITEM_PATH = "/StatusNotifierItem"
 MENU_PATH = "/MenuBar"
 WATCHER = "org.kde.StatusNotifierWatcher"
@@ -356,6 +360,35 @@ def latest_release_version():
     return m.group(1) if m else None
 
 
+def download_latest_appimage(appimage_path, api_url=GH_API_LATEST):
+    """Pure-Python in-place self-update (no AppImageUpdate needed). Resolve the latest release's
+    *.AppImage asset via the GitHub API, stream it to <appimage>.new beside the original, then
+    os.replace() it into place — an atomic rename on the same filesystem; the running, FUSE-mounted
+    image keeps executing off its old inode, so the swap is safe and the new version applies on next
+    launch. Inherits the AppImage's SSL_CERT_FILE for TLS, exactly like latest_release_version().
+    Returns the release tag on success; raises on any failure so the caller can fall back."""
+    req = urllib.request.Request(api_url, headers={"User-Agent": APP_ID})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        rel = json.load(resp)
+    # ponytail: single-arch release today, so pick the one .AppImage asset (the sibling is .zsync);
+    # add arch matching here if multi-arch builds ever ship.
+    asset = next(a for a in rel["assets"] if a["name"].endswith(".AppImage"))
+    tmp = appimage_path + ".new"
+    dl = urllib.request.Request(asset["browser_download_url"], headers={"User-Agent": APP_ID})
+    try:
+        with urllib.request.urlopen(dl, timeout=180) as resp, open(tmp, "wb") as fh:
+            shutil.copyfileobj(resp, fh)
+        os.chmod(tmp, 0o755)
+        os.replace(tmp, appimage_path)
+    except BaseException:
+        try:
+            os.unlink(tmp)               # never leave a half-written .new behind
+        except OSError:
+            pass
+        raise
+    return rel.get("tag_name") or "the latest version"
+
+
 def notify(summary, body):
     """Desktop notification via libnotify if present; skipped silently otherwise (the tray menu
     still shows the update either way)."""
@@ -387,6 +420,40 @@ def _selftest():
         f.write("# header\n[[pages]]\nname = 'x'\n")
     write_check_updates(p2, True)
     assert "[ui]" in open(p2).read() and read_check_updates(p2) is True
+
+    # pure-Python self-update: atomic swap on success, no leftover temp on failure (stubbed urlopen)
+    import io
+    class _Resp(io.BytesIO):                  # minimal urlopen() context-manager stand-in
+        def __enter__(self): return self
+        def __exit__(self, *a): self.close(); return False
+    d = tempfile.mkdtemp()
+    app = os.path.join(d, "Hercules-Stream-Linux-1.0.0-x86_64.AppImage")
+    open(app, "wb").write(b"OLD")
+    api = {"tag_name": "v1.0.1", "assets": [
+        {"name": "Hercules-Stream-Linux-1.0.1-x86_64.AppImage.zsync", "browser_download_url": "z"},
+        {"name": "Hercules-Stream-Linux-1.0.1-x86_64.AppImage", "browser_download_url": "http://x/app"}]}
+    real = urllib.request.urlopen
+    try:
+        urllib.request.urlopen = lambda req, timeout=None: _Resp(
+            b"NEW" if "/app" in req.full_url else json.dumps(api).encode())
+        assert download_latest_appimage(app, api_url="http://api/latest") == "v1.0.1"
+        assert open(app, "rb").read() == b"NEW"          # swapped in place...
+        assert os.stat(app).st_mode & 0o111              # ...and executable
+        assert not os.path.exists(app + ".new")          # no leftover temp
+        def _boom(req, timeout=None):
+            if "/app" in req.full_url:
+                raise OSError("network down")            # asset download fails mid-update
+            return _Resp(json.dumps(api).encode())
+        urllib.request.urlopen = _boom
+        try:
+            download_latest_appimage(app, api_url="http://api/latest"); assert False
+        except OSError:
+            pass
+        assert open(app, "rb").read() == b"NEW"          # original untouched
+        assert not os.path.exists(app + ".new")          # half-written temp cleaned up
+    finally:
+        urllib.request.urlopen = real
+        shutil.rmtree(d, ignore_errors=True)
     print("tray selftest ok")
 
 
@@ -505,15 +572,41 @@ class Menu(ServiceInterface):
             self.quit_ev.set()
 
     def _check_updates(self):
-        """AppImage only: hand off to AppImageUpdate for an in-place delta update if the tool is
-        installed, else open the Releases page. The AppImage carries embedded update-information
-        (baked by packaging/build-appimage.sh), so the updater needs nothing but the AppImage
-        path."""
+        """In-place update, AppImage only. If appimageupdatetool/AppImageUpdate is installed, hand
+        off to it for a zsync delta update (it reads the embedded update-info baked by
+        build-appimage.sh). Otherwise self-update in pure Python — download the latest *.AppImage and
+        atomically swap $APPIMAGE (download_latest_appimage), off the dbus loop in a worker thread.
+        Any failure, or no known newer version, falls back to opening the Releases page so the click
+        is never silently dead. The new version applies on next launch; we don't auto-restart (the
+        daemon spawned us, so re-exec would collide with the running daemon)."""
         appimage = os.environ.get("APPIMAGE")
         tool = shutil.which("appimageupdatetool") or shutil.which("AppImageUpdate")
-        target = [tool, appimage] if (appimage and tool) else ["xdg-open", RELEASES_URL]
+        if appimage and tool:
+            try:
+                subprocess.Popen([tool, appimage], start_new_session=True,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                self._open_releases()
+        elif appimage and self.update_available:
+            threading.Thread(target=self._run_self_update, args=(appimage,), daemon=True).start()
+        else:
+            self._open_releases()
+
+    def _run_self_update(self, appimage):
+        """Worker-thread body for the pure-Python self-update: download + swap, then notify. On any
+        failure, notify and open the Releases page so the user can still grab it manually."""
+        notify(APP_NAME, "Downloading update %s…" % (self.update_available or ""))
         try:
-            subprocess.Popen(target, start_new_session=True,
+            ver = download_latest_appimage(appimage)
+            notify(APP_NAME, "Updated to %s — restart %s to apply." % (ver, APP_NAME))
+        except Exception as e:
+            print("self-update failed: %r" % e, file=sys.stderr, flush=True)
+            notify(APP_NAME, "Update failed — opening the Releases page.")
+            self._open_releases()
+
+    def _open_releases(self):
+        try:
+            subprocess.Popen(["xdg-open", RELEASES_URL], start_new_session=True,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception:
             pass
