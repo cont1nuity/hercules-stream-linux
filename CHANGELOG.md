@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
      "## [X.Y.Z] - YYYY-MM-DD" and tag vX.Y.Z. The release workflow pulls that section
      into the GitHub release notes automatically (packaging/changelog-section.sh). -->
 
+## [1.2.4] - 2026-06-26
+
+### Fixed
+- **Tray update check died with `CERTIFICATE_VERIFY_FAILED` on hosts without a system CA store** —
+  the bundled manylinux CPython ships no CA bundle, so the HTTPS release check (added in 1.2.1/1.2.2)
+  could never verify a certificate on a clean distro and the update notice never fired. The AppImage
+  now bundles `certifi` and `AppRun` exports `SSL_CERT_FILE` pointed at the in-mount `cacert.pem`
+  (a host-set `SSL_CERT_FILE` still wins), making the update check work self-contained on any distro.
+
 ## [1.2.3] - 2026-06-25
 
 ### Fixed

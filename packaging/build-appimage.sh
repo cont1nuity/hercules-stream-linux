@@ -94,7 +94,7 @@ echo ">> bundled interpreter: $("$PY" --version)"
 
 # 3) python deps into the bundle (manylinux wheels — self-contained)
 "$PY" -m pip install --quiet --upgrade pip
-"$PY" -m pip install --quiet "pyusb>=1.2" pillow dbus-next   # dbus-next: tray (SNI)
+"$PY" -m pip install --quiet "pyusb>=1.2" pillow dbus-next certifi   # dbus-next: tray (SNI); certifi: CA store (manylinux CPython ships none) for the tray's HTTPS update check
 
 # 4) runtime payload
 PAY="$APPDIR/opt/hercules-stream"
@@ -184,6 +184,12 @@ cp -L "$LIBUSB" "$APPDIR/usr/lib/libusb-1.0.so.0"
 PYELF=$(find "$APPDIR/opt" -path '*/bin/python3.[0-9]*' -type f | awk 'NR==1')
 [ -x "$PYELF" ] || { echo "ERROR: bundled python ELF not found under opt/"; exit 1; }
 PYREL="${PYELF#"$APPDIR"/}"
+# CA store: the manylinux CPython ships no system certs, so HTTPS (the tray's update check)
+# fails CERTIFICATE_VERIFY_FAILED. certifi (installed in step 3) provides the bundle; point
+# SSL_CERT_FILE at the in-mount copy so Python's default ssl context finds it.
+CERT_ABS=$("$PY" -c 'import certifi; print(certifi.where())')
+CERT_REL="${CERT_ABS#"$APPDIR"/}"
+[ -f "$APPDIR/$CERT_REL" ] || { echo "ERROR: certifi cacert.pem not found in bundle"; exit 1; }
 # Tcl/Tk script libraries: needed by Tk() for the config editor (configui.py). The bundle
 # ships them; detect their location (relative to APPDIR) so a python-appimage layout change
 # is tracked and so the GUI gracefully disables (tray falls back to raw editing) if absent.
@@ -205,6 +211,7 @@ cat > "$APPDIR/AppRun" <<EOF
 HERE="\$(dirname "\$(readlink -f "\$0")")"
 export APPDIR="\${APPDIR:-\$HERE}"
 export HERCULES_STREAM_LIBUSB="\$HERE/usr/lib/libusb-1.0.so.0"
+export SSL_CERT_FILE="\${SSL_CERT_FILE:-\$HERE/$CERT_REL}"
 $TCL_EXPORTS
 exec "\$HERE/$PYREL" "\$HERE/opt/hercules-stream/src/ui.py" "\$@"
 EOF
