@@ -50,6 +50,16 @@ PulseAudio client tools (`pactl`/`parec`) if absent, a config file created from 
 example, and the udev rule that grants your user access to the device (installed via a
 native polkit prompt; replug the device afterwards when asked).
 
+#### Steam Deck / Steam Machine
+
+Both run on x86-64 AMD APUs, so the standard `x86_64` AppImage is the right build — no
+separate ARM/aarch64 download. (Of Valve's current hardware only the Steam Frame VR
+headset is ARM, and it isn't a target for a USB desktop mixer.) The first-run preflight
+also handles SteamOS's read-only rootfs automatically: when it installs the udev rule it
+runs `steamos-readonly disable`, copies the rule, then re-locks the filesystem — all
+behind the one polkit password prompt. If a major SteamOS update later wipes the rule,
+just start the app again and it re-offers the install.
+
 Config lives at `~/.config/hercules-stream/config.toml`, logs at
 `~/.local/state/hercules-stream/`.
 
