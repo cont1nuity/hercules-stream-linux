@@ -1,6 +1,6 @@
 """Locate and restart the running daemon — used by the config editor's "Apply & Restart".
 
-Dependency-free (stdlib + paths.ROOT). The daemon's single-instance lock file holds its pid
+Dependency-free (stdlib + paths). The daemon's single-instance lock file holds its pid
 (ui.single_instance() truncates it and writes os.getpid()), so we can find a running daemon
 from any process in the same session — whether the editor was launched from the tray or
 standalone — and restart it the same way the tray does.
@@ -12,7 +12,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from paths import ROOT
+import paths
 
 
 def lockfile():
@@ -36,9 +36,10 @@ def daemon_pid():
 
 
 def launch_cmd():
-    """What to (re)launch: the AppImage that started us ($APPIMAGE, exported by the AppImage
-    runtime) or the repo checkout's start.sh. Mirrors tray.launch_cmd()."""
-    return os.environ.get("APPIMAGE") or os.path.join(ROOT, "start.sh")
+    """What to (re)launch — resolved in paths.install_target() (mirrors tray.launch_cmd()): our
+    installed AppImage copy (a relocated download), the adopted $APPIMAGE (a tool-placed one), or
+    the repo checkout's start.sh."""
+    return paths.install_target()
 
 
 def restart_daemon(pid=None):

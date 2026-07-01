@@ -1625,6 +1625,11 @@ def load_config(cfgpath):
 
 
 def main():
+    try:                                     # persist a downloaded copy / adopt a tool-installed
+        from tray import maybe_self_install  # one, then repoint autostart. No-op unless we are an
+        maybe_self_install()                 # AppImage. Guarded: a host without dbus_next raises on
+    except Exception as e:                   # the tray import (SystemExit-safe) -> daemon runs on.
+        print(f"self-install skipped: {e!r}", file=sys.stderr)
     args = sys.argv[1:]
     # Turn a C-level abort (e.g. a libusb assert on surprise removal) into a thread-stack dump
     # in logs/crash.log instead of a silent death — the daemon often runs detached. ~free, and

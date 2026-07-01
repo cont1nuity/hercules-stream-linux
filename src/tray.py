@@ -30,6 +30,7 @@ import threading
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import paths
 from paths import ROOT, XDG_CONFIG, XDG_STATE, LOGS
 
 APP_ID = "hercules-stream"
@@ -73,9 +74,10 @@ AUTOSTART_OPTOUT = os.path.join(XDG_STATE, "autostart-disabled")
 
 
 def launch_cmd():
-    """What a login should start: the AppImage that is running us (the runtime exports
-    $APPIMAGE = the original .AppImage path) or the repo checkout's start.sh."""
-    return os.environ.get("APPIMAGE") or os.path.join(ROOT, "start.sh")
+    """What a login should start — resolved in paths.install_target(): our installed copy
+    (INSTALL_APPIMAGE) for a relocated download, the adopted $APPIMAGE for a tool-placed one,
+    else the repo checkout's start.sh."""
+    return paths.install_target()
 
 
 def autostart_enabled():
@@ -112,6 +114,39 @@ def autostart_default():
     actually in use (AppImage path vs repo start.sh); respect a recorded opt-out."""
     if not os.path.exists(AUTOSTART_OPTOUT):
         autostart_enable()
+
+
+def maybe_self_install():
+    """Make the running AppImage persist. From a throwaway dir (a fresh download in ~/Downloads)
+    copy it into INSTALL_APPIMAGE so the original can be deleted; from a real home (a tool
+    installed it, or the user placed it) leave it there and make no copy. Either way, if autostart
+    is on, repoint it at the resolved persistent target (paths.install_target). No-op on a
+    dev/source run ($APPIMAGE unset). Called first thing by ui.main() at daemon startup.
+    ponytail: re-copies (~30MB) each launch from a throwaway path; the normal login launches the
+    installed copy (or a tool's), which skips the copy — so this only fires on a deliberate
+    re-download that the user then runs."""
+    src = os.environ.get("APPIMAGE")
+    if not src:
+        return
+    src = os.path.realpath(src)
+    dst = paths.INSTALL_APPIMAGE
+    if paths._is_ephemeral(src) and src != os.path.realpath(dst):
+        try:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            tmp = dst + ".new"
+            shutil.copy2(src, tmp)                  # preserves the executable bit
+            os.chmod(tmp, 0o755)
+            os.replace(tmp, dst)                    # atomic; a running old copy keeps its inode
+        except OSError as e:
+            print("self-install failed: %r" % e, file=sys.stderr, flush=True)
+            return
+    if autostart_enabled():
+        try:
+            cur = open(AUTOSTART_ENTRY).read()
+        except OSError:
+            cur = ""
+        if launch_cmd() not in cur:                 # only rewrite when the target actually moved
+            autostart_enable()                      # (re)point Exec= at install_target()
 
 
 # --------------------------------------------------------------------------- the icon
@@ -172,120 +207,6 @@ def read_state(path):
             return f.read().strip()
     except OSError:
         return None
-
-
-# ----------------------------------------------------------------- D-Bus service objects
-
-try:
-    from dbus_next import Variant, PropertyAccess                  # noqa: E402
-    from dbus_next.aio import MessageBus                           # noqa: E402
-    from dbus_next.service import (ServiceInterface, method,       # noqa: E402
-                                   dbus_property, signal as dbus_signal)
-except ImportError as _e:                     # tray is optional — daemon runs without it
-    print("tray unavailable: %s (pip/pacman: dbus-next)" % _e, file=sys.stderr)
-    sys.exit(0)
-
-
-class Sni(ServiceInterface):
-    def __init__(self, normal_px, greyed_px, tooltip_text):
-        super().__init__("org.kde.StatusNotifierItem")
-        self._normal = normal_px
-        self._greyed = greyed_px
-        self._idle = False               # True when the daemon has no device -> greyed icon
-        self._tip = tooltip_text
-        self.on_activate = lambda: None
-
-    def set_idle(self, idle):
-        """Switch between the normal and greyed icon and tell the host to re-read it."""
-        if bool(idle) != self._idle:
-            self._idle = bool(idle)
-            self.NewIcon()
-            self.NewToolTip()
-
-    @dbus_property(access=PropertyAccess.READ)
-    def Category(self) -> "s":
-        return "ApplicationStatus"
-
-    @dbus_property(access=PropertyAccess.READ)
-    def Id(self) -> "s":
-        return APP_ID
-
-    @dbus_property(access=PropertyAccess.READ)
-    def Title(self) -> "s":
-        return APP_NAME
-
-    @dbus_property(access=PropertyAccess.READ)
-    def Status(self) -> "s":
-        return "Active"
-
-    @dbus_property(access=PropertyAccess.READ)
-    def WindowId(self) -> "i":
-        return 0
-
-    @dbus_property(access=PropertyAccess.READ)
-    def IconName(self) -> "s":
-        return ""
-
-    @dbus_property(access=PropertyAccess.READ)
-    def IconPixmap(self) -> "a(iiay)":
-        return self._greyed if (self._idle and self._greyed) else self._normal
-
-    @dbus_property(access=PropertyAccess.READ)
-    def OverlayIconName(self) -> "s":
-        return ""
-
-    @dbus_property(access=PropertyAccess.READ)
-    def OverlayIconPixmap(self) -> "a(iiay)":
-        return []
-
-    @dbus_property(access=PropertyAccess.READ)
-    def AttentionIconName(self) -> "s":
-        return ""
-
-    @dbus_property(access=PropertyAccess.READ)
-    def AttentionIconPixmap(self) -> "a(iiay)":
-        return []
-
-    @dbus_property(access=PropertyAccess.READ)
-    def ToolTip(self) -> "(sa(iiay)ss)":
-        tip = "No device connected — idle" if self._idle else self._tip
-        return ["", [], APP_NAME, tip]
-
-    @dbus_property(access=PropertyAccess.READ)
-    def ItemIsMenu(self) -> "b":
-        return False                          # left click = Activate (config quick-open)
-
-    @dbus_property(access=PropertyAccess.READ)
-    def Menu(self) -> "o":
-        return MENU_PATH
-
-    @method()
-    def Activate(self, x: "i", y: "i"):
-        self.on_activate()
-
-    @method()
-    def SecondaryActivate(self, x: "i", y: "i"):
-        self.on_activate()
-
-    @method()
-    def ContextMenu(self, x: "i", y: "i"):
-        pass                                  # the host renders /MenuBar itself
-
-    @method()
-    def Scroll(self, delta: "i", orientation: "s"):
-        pass
-
-    @dbus_signal()
-    def NewIcon(self):
-        pass
-
-    @dbus_signal()
-    def NewToolTip(self):
-        pass
-
-    @dbus_signal()
-    def NewStatus(self) -> "s":
-        return "Active"
 
 
 def read_check_updates(cfgpath):
@@ -421,6 +342,38 @@ def _selftest():
     write_check_updates(p2, True)
     assert "[ui]" in open(p2).read() and read_check_updates(p2) is True
 
+    # self-install: relocate a throwaway copy, adopt a deliberately-placed one, repoint autostart.
+    # INSTALL_APPIMAGE / EPHEMERAL_DIRS live in paths, so override them there (functions read the
+    # module globals at call time); AUTOSTART_* are tray globals -> point them at the temp dir too.
+    global AUTOSTART_ENTRY, AUTOSTART_OPTOUT
+    _saved = (AUTOSTART_ENTRY, AUTOSTART_OPTOUT, paths.INSTALL_APPIMAGE,
+              paths.EPHEMERAL_DIRS, os.environ.get("APPIMAGE"))
+    with tempfile.TemporaryDirectory() as d:
+        AUTOSTART_ENTRY = os.path.join(d, "autostart", APP_ID + ".desktop")
+        AUTOSTART_OPTOUT = os.path.join(d, "state", "autostart-disabled")
+        paths.INSTALL_APPIMAGE = os.path.join(d, "share", "Hercules-Stream.AppImage")
+        dl = os.path.join(d, "Downloads"); os.makedirs(dl)
+        paths.EPHEMERAL_DIRS = [dl]                             # only this dir counts as throwaway
+        thrown = os.path.join(dl, "Hercules-Stream-Linux-1.0.0-x86_64.AppImage")
+        with open(thrown, "wb") as f: f.write(b"#!/bin/sh\ntrue\n")
+        os.chmod(thrown, 0o755); os.environ["APPIMAGE"] = thrown
+        autostart_enable()                                      # Exec= already resolves to install_target()
+        maybe_self_install()                                    # relocate the Downloads copy -> install dir
+        assert os.path.exists(paths.INSTALL_APPIMAGE), "a throwaway copy must be relocated"
+        assert launch_cmd() == paths.INSTALL_APPIMAGE, "launch target must be the install path"
+        assert paths.INSTALL_APPIMAGE in open(AUTOSTART_ENTRY).read(), "autostart must be repointed"
+        placed = os.path.join(d, "toolbin", "Hercules-Stream.AppImage")   # a tool's / deliberate home
+        os.makedirs(os.path.dirname(placed))
+        with open(placed, "wb") as f: f.write(b"#!/bin/sh\ntrue\n")
+        os.chmod(placed, 0o755); os.environ["APPIMAGE"] = placed
+        maybe_self_install()                                    # not ephemeral -> adopt in place, no copy
+        assert launch_cmd() == placed, "a placed AppImage is adopted, not duplicated"
+        assert placed in open(AUTOSTART_ENTRY).read(), "autostart follows the adopted copy"
+    (AUTOSTART_ENTRY, AUTOSTART_OPTOUT, paths.INSTALL_APPIMAGE,
+     paths.EPHEMERAL_DIRS, _ai) = _saved
+    if _ai is None: os.environ.pop("APPIMAGE", None)
+    else: os.environ["APPIMAGE"] = _ai
+
     # pure-Python self-update: atomic swap on success, no leftover temp on failure (stubbed urlopen)
     import io
     class _Resp(io.BytesIO):                  # minimal urlopen() context-manager stand-in
@@ -455,6 +408,129 @@ def _selftest():
         urllib.request.urlopen = real
         shutil.rmtree(d, ignore_errors=True)
     print("tray selftest ok")
+
+
+# ---- offline self-check: runs BEFORE importing dbus_next, so a daemon host that lacks it can still test ----
+if __name__ == "__main__" and "--selftest" in sys.argv[1:]:
+    _selftest()
+    sys.exit(0)
+
+
+# ----------------------------------------------------------------- D-Bus service objects
+
+try:
+    from dbus_next import Variant, PropertyAccess                  # noqa: E402
+    from dbus_next.aio import MessageBus                           # noqa: E402
+    from dbus_next.service import (ServiceInterface, method,       # noqa: E402
+                                   dbus_property, signal as dbus_signal)
+except ImportError as _e:                     # tray is optional — daemon runs without it
+    if __name__ == "__main__":                # run as a process -> exit cleanly (daemon runs trayless)
+        print("tray unavailable: %s (pip/pacman: dbus-next)" % _e, file=sys.stderr)
+        sys.exit(0)
+    raise                                     # imported for its helpers (ui.maybe_self_install)
+    #                                           -> let the caller catch a plain ImportError
+
+
+class Sni(ServiceInterface):
+    def __init__(self, normal_px, greyed_px, tooltip_text):
+        super().__init__("org.kde.StatusNotifierItem")
+        self._normal = normal_px
+        self._greyed = greyed_px
+        self._idle = False               # True when the daemon has no device -> greyed icon
+        self._tip = tooltip_text
+        self.on_activate = lambda: None
+
+    def set_idle(self, idle):
+        """Switch between the normal and greyed icon and tell the host to re-read it."""
+        if bool(idle) != self._idle:
+            self._idle = bool(idle)
+            self.NewIcon()
+            self.NewToolTip()
+
+    @dbus_property(access=PropertyAccess.READ)
+    def Category(self) -> "s":
+        return "ApplicationStatus"
+
+    @dbus_property(access=PropertyAccess.READ)
+    def Id(self) -> "s":
+        return APP_ID
+
+    @dbus_property(access=PropertyAccess.READ)
+    def Title(self) -> "s":
+        return APP_NAME
+
+    @dbus_property(access=PropertyAccess.READ)
+    def Status(self) -> "s":
+        return "Active"
+
+    @dbus_property(access=PropertyAccess.READ)
+    def WindowId(self) -> "i":
+        return 0
+
+    @dbus_property(access=PropertyAccess.READ)
+    def IconName(self) -> "s":
+        return ""
+
+    @dbus_property(access=PropertyAccess.READ)
+    def IconPixmap(self) -> "a(iiay)":
+        return self._greyed if (self._idle and self._greyed) else self._normal
+
+    @dbus_property(access=PropertyAccess.READ)
+    def OverlayIconName(self) -> "s":
+        return ""
+
+    @dbus_property(access=PropertyAccess.READ)
+    def OverlayIconPixmap(self) -> "a(iiay)":
+        return []
+
+    @dbus_property(access=PropertyAccess.READ)
+    def AttentionIconName(self) -> "s":
+        return ""
+
+    @dbus_property(access=PropertyAccess.READ)
+    def AttentionIconPixmap(self) -> "a(iiay)":
+        return []
+
+    @dbus_property(access=PropertyAccess.READ)
+    def ToolTip(self) -> "(sa(iiay)ss)":
+        tip = "No device connected — idle" if self._idle else self._tip
+        return ["", [], APP_NAME, tip]
+
+    @dbus_property(access=PropertyAccess.READ)
+    def ItemIsMenu(self) -> "b":
+        return False                          # left click = Activate (config quick-open)
+
+    @dbus_property(access=PropertyAccess.READ)
+    def Menu(self) -> "o":
+        return MENU_PATH
+
+    @method()
+    def Activate(self, x: "i", y: "i"):
+        self.on_activate()
+
+    @method()
+    def SecondaryActivate(self, x: "i", y: "i"):
+        self.on_activate()
+
+    @method()
+    def ContextMenu(self, x: "i", y: "i"):
+        pass                                  # the host renders /MenuBar itself
+
+    @method()
+    def Scroll(self, delta: "i", orientation: "s"):
+        pass
+
+    @dbus_signal()
+    def NewIcon(self):
+        pass
+
+    @dbus_signal()
+    def NewToolTip(self):
+        pass
+
+    @dbus_signal()
+    def NewStatus(self) -> "s":
+        return "Active"
 
 
 class Menu(ServiceInterface):
@@ -775,11 +851,8 @@ async def amain(daemon_pid, cfgpath, icon, state_file):
 
 
 def main():
-    global VERSION
-    if "--selftest" in sys.argv[1:]:
-        _selftest()
-        return
-    die_with_parent()
+    global VERSION                            # --selftest is handled at module level (above the
+    die_with_parent()                         # dbus_next import) so a dbus-free host can still run it
     a = sys.argv[1:]
     daemon_pid = int(opt(a, "--pid", "0") or "0")
     cfgpath = opt(a, "--config")
